@@ -1,0 +1,29 @@
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+.ipynb_checkpoints/
+
+# Virtual environments
+venv/
+env/
+.env
+
+# Pesos do Modelo e Binários Grandes (Hospedados no Hugging Face Hub)
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.gguf
+*.zip
+*.tar.gz
+
+# Pastas de adaptadores LoRA e Standalone (grandes para o Git padrão)
+CyberRott-Phi4-LoRA/
+CyberRott-Phi4-mini-Standalone/
+checkpoint-*/
+runs/
+wandb/
+
+# Logs do sistema
+*.log
