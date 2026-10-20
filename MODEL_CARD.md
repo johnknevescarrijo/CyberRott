@@ -16,9 +16,26 @@ tags:
 - appsec
 - cve
 - lora
+- wmdp
+- wmdp-cyber
 datasets:
 - nvidia/Nemotron-Research-GooseReason-0.7M
+- cais/wmdp
 pipeline_tag: text-generation
+model-index:
+- name: CyberRott-Phi4-mini-Instruct
+  results:
+  - task:
+      type: text-generation
+      name: Cybersecurity Question Answering
+    dataset:
+      name: WMDP-Cyber
+      type: cais/wmdp
+      args: wmdp-cyber
+    metrics:
+    - name: Accuracy
+      type: acc
+      value: 43.18
 ---
 
 # 🛡️ CyberRott 1.0 — Reasoning-Driven Cybersecurity SLM
@@ -43,6 +60,7 @@ The model is the product of an **Anchor Mixing Architecture**, combining large-s
 | **Training Corpus** | 2,820 Curated Sequences (320 20x-Upsampled Anchors + 2,500 GooseReason-Cyber samples) |
 | **Training Steps / Epochs** | 530 optimization steps across 3 complete epochs |
 | **Final Convergence Loss** | **0.2825** (strictly monotonic convergence from an initial ~1.4500) |
+| **WMDP-Cyber Benchmark (0-shot)** | **43.18%** (±1.11% stderr, 95% CI: [41.00%, 45.36%]) |
 | **License** | MIT License |
 
 ---
@@ -138,6 +156,44 @@ Step | Loss   | Epoch
  500 | 0.2915 | 2.83
  530 | 0.2825 | 3.00
 ```
+
+---
+
+## 📊 Evaluation & Empirical Benchmarks
+
+To quantify CyberRott 1.0's capability on advanced cybersecurity concepts without prompt engineering or in-context exemplars, the standalone model underwent formal zero-shot evaluation on the **Weapons of Mass Destruction Proxy - Cyber (WMDP-Cyber)** benchmark, authored by the **Center for AI Safety (CAIS)**.
+
+WMDP-Cyber measures actionable risk and technical discernment across 1,987 multiple-choice questions assessing exploit development, vulnerability remediation, defensive telemetry bypasses, reverse engineering, and offensive tradecraft.
+
+### Evaluation Setup & Specifications
+- **Benchmark**: `cais/wmdp` (`wmdp-cyber` test split)
+- **Evaluation Framework**: `lm-evaluation-harness` (v0.4.13)
+- **Evaluation Regime**: Strict **0-shot** (`num_fewshot: 0`)
+- **Evaluated Checkpoint**: `johnknevescarrijo/CyberRott-Phi4-mini-Instruct` (Dense 3.82B, Float16)
+- **Total Test Samples**: 1,987 multiple-choice questions
+- **Evaluation Hardware**: NVIDIA Tesla T4 (PyTorch 2.11 / CUDA 13.0)
+- **Raw Evaluation Artifact**: [`eval_results/results_2026-10-20T00-59-42.294908.json`](eval_results/results_2026-10-20T00-59-42.294908.json)
+
+### Empirical Metric Summary
+
+| Task | Metric | Score | Confidence Interval (95%) | Standard Error ($\sigma$) | Evaluated Questions |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **WMDP-Cyber** | **Accuracy** | **43.18%** | **[41.00%, 45.36%]** | ±1.11% | 1,987 |
+
+### Comparative Benchmark Analysis
+
+| Model | Architecture Scale | Evaluation Mode | WMDP-Cyber Accuracy | Delta vs. Random |
+| :--- | :--- | :--- | :--- | :--- |
+| **Random Baseline** | — | — | 25.00% | — |
+| **Llama-2-7B** | 7.0B Dense | 0-shot | ~28.00% | +3.00% |
+| **Mistral-7B-v0.1** | 7.3B Dense | 0-shot | ~36.00% | +11.00% |
+| **CyberRott 1.0 (Ours)** | **3.82B Dense** | **0-shot** | **43.18%** (±1.11%) | **+18.18%** |
+| **Llama-3-8B** | 8.0B Dense | 0-shot | ~44.00% | +19.00% |
+
+### Analytical Highlights
+1. **Parameter Superiority**: Operating at an ultra-compact footprint of **3.82B parameters**, CyberRott 1.0 delivers an accuracy of **43.18%**, markedly surpassing the foundational performance of 7B-class models including **Llama-2-7B (+15.18%)** and **Mistral-7B (+7.18%)**.
+2. **Competitive with 8B Frontier Baselines**: CyberRott approaches the zero-shot performance of **Llama-3-8B** (~44.0%) within ~0.82 percentage points, demonstrating that domain-specific synthetic reasoning trajectories and high-density Golden Anchors effectively substitute for parameter scale in specialized reasoning tasks.
+3. **Reproducibility**: The evaluation was executed using the standard CAIS prompt template via `lm-evaluation-harness`. Exact predictions, log probabilities, and runtime hardware profiles are tracked in [`eval_results/results_2026-10-20T00-59-42.294908.json`](eval_results/results_2026-10-20T00-59-42.294908.json).
 
 ---
 
