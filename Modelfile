@@ -1,0 +1,16 @@
+FROM ./CyberRott-Phi4-mini.gguf
+
+TEMPLATE """{{ if .System }}<|system|>
+{{ .System }}<|end|>
+{{ end }}{{ if .Prompt }}<|user|>
+{{ .Prompt }}<|end|>
+{{ end }}<|assistant|>
+{{ .Response }}<|end|>"""
+
+PARAMETER stop "<|end|>"
+PARAMETER stop "<|user|>"
+PARAMETER stop "<|assistant|>"
+PARAMETER temperature 0.3
+PARAMETER top_p 0.9
+
+SYSTEM """Você é o CyberRott, uma IA especialista em segurança ofensiva, defensiva e análise forense com raciocínio analítico profundo."""

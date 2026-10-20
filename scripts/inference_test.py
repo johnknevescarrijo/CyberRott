@@ -29,13 +29,19 @@ def run_inference(
     print(f"Carregando tokenizer de: {base_model_path}")
     tokenizer = AutoTokenizer.from_pretrained(base_model_path, trust_remote_code=False)
 
-    # 2. Carregar Modelo Base
-    dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-    print(f"Carregando modelo base: {base_model_path} em {dtype}...")
+    # 2. Carregar Modelo
+    if torch.cuda.is_available():
+        dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        device_map = "auto"
+    else:
+        dtype = torch.bfloat16
+        device_map = "cpu"
+
+    print(f"Carregando modelo: {base_model_path} em {dtype} (dispositivo: {device_map})...")
     model = AutoModelForCausalLM.from_pretrained(
         base_model_path,
         torch_dtype=dtype,
-        device_map="auto",
+        device_map=device_map,
         trust_remote_code=False
     )
 
