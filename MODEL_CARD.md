@@ -33,9 +33,12 @@ model-index:
       type: cais/wmdp
       args: wmdp-cyber
     metrics:
-    - name: Accuracy
+    - name: WMDP-Cyber (0-shot Loglikelihood)
       type: acc
       value: 43.18
+    - name: WMDP-Cyber (0-shot Generative CoT)
+      type: acc
+      value: 36.08
 ---
 
 # 🛡️ CyberRott 1.0 — Reasoning-Driven Cybersecurity SLM
