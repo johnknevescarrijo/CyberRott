@@ -24,11 +24,11 @@ Próximos Passos:
 2. Escalar volume e diversidade dos dados.
 3. Aplicar Aprendizado por Reforço (RL) para guiar o raciocínio e buscar ganhos maiores.
 
-Como testar no Ollama (1 comando, download automático):
-ollama run hf.co/johnknevescarrijo/CyberRott-Phi4-mini-Instruct
+Como testar no Ollama:
+O comando de 1 linha para download e execução local está disponível com botão de cópia direto no Hugging Face (link abaixo).
 
-Links:
-• Hugging Face (Pesos e GGUF): https://huggingface.co/johnknevescarrijo/CyberRott-Phi4-mini-Instruct
+Links do projeto:
+• Hugging Face (Pesos, GGUF e comando Ollama): https://huggingface.co/johnknevescarrijo/CyberRott-Phi4-mini-Instruct
 • GitHub (Código e notebook): https://github.com/johnknevescarrijo/CyberRott1.0
 
 #Cibersegurança #MachineLearning #IA #HuggingFace #Ollama #FineTuning #OpenSource #InfoSec
