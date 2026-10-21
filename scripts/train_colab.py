@@ -29,6 +29,56 @@ from transformers import (
 from peft import LoraConfig, TaskType
 from trl import SFTTrainer, SFTConfig
 
+
+def setup_hardware_optimizations(args: Optional[argparse.Namespace] = None) -> Dict[str, Any]:
+    """
+    Detecta e aplica acelerações de hardware de última geração para GPUs modernas (A100, H100, L4):
+    - TF32 em cuDNN e matmul (acelera até 3x operações de tensores sem perda de precisão)
+    - Auto-sintonia de batch size em GPUs de alta capacidade (A100 40GB/80GB)
+    - Detecção e preferência automática por FlashAttention-2
+    """
+    profile: Dict[str, Any] = {
+        "device_name": "CPU",
+        "vram_gb": 0.0,
+        "is_ampere_or_newer": False,
+        "is_high_vram": False,
+        "recommended_attn": "sdpa",
+    }
+    if not torch.cuda.is_available():
+        return profile
+
+    # Ativação de TF32 para arquiteturas Ampere / Ada / Hopper (A100, H100, L4, RTX 30/40)
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+
+    device_name = torch.cuda.get_device_name(0)
+    total_vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+    major, _ = torch.cuda.get_device_capability(0)
+
+    profile["device_name"] = device_name
+    profile["vram_gb"] = round(total_vram_gb, 1)
+    profile["is_ampere_or_newer"] = (major >= 8)
+    profile["is_high_vram"] = (total_vram_gb >= 35.0)  # A100 40GB/80GB, H100 80GB
+
+    try:
+        import flash_attn  # noqa: F401
+        profile["recommended_attn"] = "flash_attention_2"
+    except ImportError:
+        profile["recommended_attn"] = "sdpa"
+
+    if args is not None and getattr(args, "auto_optimize", True):
+        if profile["is_high_vram"]:
+            if args.per_device_train_batch_size == 2 and args.gradient_accumulation_steps == 8:
+                args.per_device_train_batch_size = 4
+                args.gradient_accumulation_steps = 4
+                print(f"[Auto-Otimização A100 ({profile['vram_gb']}GB)] Ajustado batch_size=4, grad_accum=4 (Batch efetivo=16) para saturar os Tensor Cores.")
+            if args.attn_implementation == "sdpa" and profile["recommended_attn"] == "flash_attention_2":
+                args.attn_implementation = "flash_attention_2"
+                print("[Auto-Otimização A100] Ativado 'flash_attention_2' automaticamente.")
+
+    return profile
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="CyberRott 1.0 - Treinamento LoRA / SFT com Phi-4-mini-instruct"
@@ -183,17 +233,26 @@ def parse_args():
         default="adamw_torch_fused",
         help="Otimizador PyTorch (adamw_torch_fused, adamw_torch, etc.)."
     )
+    train_group.add_argument(
+        "--auto_optimize",
+        action="store_true",
+        default=True,
+        help="Auto-otimiza batch size, TF32 e FlashAttention para A100/H100/L4 (padrão: True)."
+    )
 
     return parser.parse_args()
 
 
 def train():
     args = parse_args()
+    hw_profile = setup_hardware_optimizations(args)
 
     print("=" * 70)
-    print("Iniciando Pipeline de Treinamento - CyberRott 1.0")
+    print("Iniciando Pipeline de Treinamento - CyberRott")
     print(f"Modelo Base:           {args.model_name_or_path}")
-    print(f"Hardware GPU:          {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'}")
+    print(f"Hardware GPU:          {hw_profile['device_name']} ({hw_profile['vram_gb']} GB VRAM)")
+    print(f"Atenção Configurada:   {args.attn_implementation} (TF32 Matmul: Ativo)")
+    print(f"Batch Size Efetivo:    {args.per_device_train_batch_size} x {args.gradient_accumulation_steps} = {args.per_device_train_batch_size * args.gradient_accumulation_steps}")
     print(f"DType selecionado:     {args.torch_dtype}")
     print(f"Target Modules LoRA:   {args.target_modules}")
     print(f"Diretório de Saída:    {args.output_dir}")
@@ -302,6 +361,9 @@ def train():
         "bf16": (args.torch_dtype == "bfloat16" and torch.cuda.is_bf16_supported()),
         "fp16": (args.torch_dtype == "float16"),
         "optim": args.optim,
+        "dataloader_num_workers": 2 if torch.cuda.is_available() else 0,
+        "dataloader_pin_memory": True if torch.cuda.is_available() else False,
+        "group_by_length": True,
     }
 
     # Tratamento max_seq_length vs max_length
