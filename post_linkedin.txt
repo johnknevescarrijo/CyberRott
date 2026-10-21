@@ -1,0 +1,31 @@
+Compartilhando os resultados do CyberRott 1.0, um projeto prático focado em fine-tuning e raciocínio técnico voltado para cibersegurança.
+
+O objetivo foi adaptar um modelo compacto (SLM de 3.8B parâmetros, baseado no Phi-4-mini da Microsoft) para rodar localmente no endpoint/workstation com suporte a Chain-of-Thought (CoT) para análise de vulnerabilidades e fluxo de dados.
+
+Pipeline e Treinamento:
+• Dados: Base de raciocínio da NVIDIA (GooseReason) filtrada para tópicos de segurança, complementada com cenários analíticos complexos gerados via Gemini 4 Argon.
+• Treinamento: Fine-tuning supervisionado com LoRA (BF16, all-linear) executado no Google Colab utilizando uma GPU A100.
+• Quantização: Conversão para formato GGUF, permitindo execução local eficiente via Ollama ou llama.cpp sem necessidade de GPUs de alto custo.
+
+Resultados do Benchmark (WMDP-Cyber em GPU L4):
+Avaliado contra as 1.987 questões do benchmark WMDP-Cyber (CAIS) utilizando uma GPU L4 com vLLM, os dados trouxeram um contraste interessante:
+
+1. Avaliação Direta (Sem CoT / Not CoT):
+No teste clássico de loglikelihood (resposta direta sem etapa de pensamento), a diferença entre o modelo original da Microsoft e o CyberRott foi praticamente nula (43.03% vs 43.18%). Isso confirmou que a adaptação preservou a base de conhecimento do modelo sem sofrer de esquecimento catastrófico.
+
+2. Avaliação com Raciocínio (Chain-of-Thought / CoT):
+Quando o modelo foi submetido à geração aberta com raciocínio intermediário (<think>...</think>), a diferença foi considerável: 36.08% de acurácia contra 32.16% do modelo base (+3.92% de ganho absoluto), além de uma redução de cerca de 5x em falhas de extração e respostas evasivas. O modelo passou a estruturar a cadeia lógica (vetor de entrada, taint analysis, sink e mitigação) antes de emitir a resposta.
+
+Próximos Passos:
+Esta é a versão inicial do projeto. Para as próximas iterações, os objetivos são:
+1. Escalar o volume e a granularidade do dataset de treino com mais fontes técnicas.
+2. Aplicar Aprendizado por Reforço (Reinforcement Learning) com recompensas estruturadas para refinar ainda mais a coerência do raciocínio e buscar um salto maior de acurácia.
+
+Como testar localmente via Ollama (1 comando):
+ollama run hf.co/johnknevescarrijo/CyberRott-Phi4-mini-Instruct
+
+Links do projeto:
+• Hugging Face (Pesos, GGUF e Model Card): https://huggingface.co/johnknevescarrijo/CyberRott-Phi4-mini-Instruct
+• Repositório GitHub (Código, scripts e notebook): https://github.com/johnknevescarrijo/CyberRott1.0
+
+#Cibersegurança #MachineLearning #ArtificialIntelligence #HuggingFace #Ollama #FineTuning #OpenSource #InfoSec

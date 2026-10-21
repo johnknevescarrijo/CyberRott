@@ -56,7 +56,7 @@ The model is the product of an **Anchor Mixing Architecture**, combining large-s
 | **Base Model** | [`microsoft/Phi-4-mini-instruct`](https://huggingface.co/microsoft/Phi-4-mini-instruct) (3.82B parameters) |
 | **Base Architecture** | Dense Transformer Decoder, Rotary Position Embeddings (RoPE), 200,064 token vocabulary |
 | **Adaptation Method** | Parameter-Efficient Fine-Tuning (PEFT) via **LoRA** (Low-Rank Adaptation) |
-| **LoRA Rank ($r$) / Alpha ($\alpha$)** | $r = 32$, $\alpha = 64$ (Scaling Factor $\alpha/r = 2.0$, Dropout = 0.05) |
+| **LoRA Configuration** | Rank r = 32, Alpha α = 64 (Scaling Factor: 2.0, Dropout: 0.05) |
 | **Target Projections** | `all-linear` (`qkv_proj`, `o_proj`, `gate_up_proj`, `down_proj`) |
 | **Numerical Precision** | Native Bfloat16 (`bf16`) with PyTorch Scaled Dot-Product Attention (SDPA) |
 | **Reasoning Topology** | 7-Stage Structured Chain-of-Thought (CoT) delimited by `<think>...</think>` |
@@ -128,7 +128,7 @@ flowchart TD
 12. **DNS Tunneling & Data Exfiltration (MITRE T1071.004)**: Base64/Base32 payload chunking across DNS subdomains, detected via Shannon entropy analysis and anomalous RDATA volume metrics.
 13. **JWT Algorithm Confusion (RFC 7515 / CVE-2015-9235)**: Public key RS256-to-HS256 asymmetric-to-symmetric substitution bypass, remediated via strict algorithm pinning.
 14. **Docker Container Breakout via Privileged Mode**: Abuse of Linux capabilities (`CAP_SYS_ADMIN`), raw block device mounting (`/dev/sda`), and cgroup containment escapes.
-15. **AES-GCM Nonce Reuse (CWE-323)**: Cryptographic GHASH authentication key recovery ($H$) through polynomial factorization, leading to message authentication tag forgery.
+15. **AES-GCM Nonce Reuse (CWE-323)**: Cryptographic GHASH authentication key recovery (H) through polynomial factorization, leading to message authentication tag forgery.
 16. **Path Traversal & Local File Inclusion (CWE-22)**: URL-encoded traversal sequence bypasses targeting `/etc/passwd`, mitigated with canonicalization checks (`realpath()`) and basename pinning.
 
 ---
@@ -138,7 +138,7 @@ flowchart TD
 Fine-tuning parameters were rigorously tuned for optimal optimization dynamics:
 
 - **Total Training Duration**: 3 epochs (530 optimization steps)
-- **Effective Batch Size**: 16 ($2 \text{ per device} \times 8 \text{ gradient accumulation steps}$)
+- **Effective Batch Size**: 16 (2 sequences per device × 8 gradient accumulation steps)
 - **Peak Learning Rate**: 2e-4 with Cosine annealing and 5% warmup ratio
 - **Optimizer**: `adamw_torch_fused` (Bfloat16 native)
 - **Attention Backend**: Flash Attention 2 / Scaled Dot-Product Attention (SDPA)
@@ -199,8 +199,8 @@ Each question was presented in ChatML format with explicit instructions to formu
 
 | Metric | microsoft/Phi-4-mini-instruct (Base) | CyberRott 1.0 (Ours) | Relative Delta / Advantage |
 | :--- | :---: | :---: | :---: |
-| **Generative CoT Accuracy** | 32.16% | **36.08%** | **+3.92% absolute gain (+12.2% relative, $p < 0.001$)** |
-| **Standard Error ($\sigma$)** | ±1.05% (`0.010478`) | ±1.08% (`0.010774`) | Robust sample precision |
+| **Generative CoT Accuracy** | 32.16% | **36.08%** | **+3.92% absolute gain (+12.2% relative, p < 0.001)** |
+| **Standard Error (σ)** | ±1.05% (`0.010478`) | ±1.08% (`0.010774`) | Robust sample precision |
 | **95% Confidence Interval** | [30.11%, 34.21%] | **[33.97%, 38.20%]** | Statistically significant margin |
 | **Correct Answers** | 639 / 1,987 | **717 / 1,987** | **+78 additional verified answers** |
 | **Disjoint Accuracy Shift** | — | **366 questions** | CyberRott solved correctly where Base failed |

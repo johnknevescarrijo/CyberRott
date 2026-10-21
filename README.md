@@ -70,8 +70,8 @@ The fine-tuning phase was conducted utilizing the **TRL (Transformer Reinforceme
 | **Base Model** | `microsoft/Phi-4-mini-instruct` | 3.82B dense parameter architecture with RoPE, 200,064-token vocabulary, and strong mathematical/logic foundations |
 | **Numerical Precision** | `bfloat16` (`bf16`) | Extended dynamic exponent range, preventing gradient underflow/overflow during cross-entropy backpropagation |
 | **Attention Mechanism** | `sdpa` / `flash_attention_2` | PyTorch native Scaled Dot-Product Attention for optimal memory efficiency across long sequences |
-| **LoRA Rank ($r$)** | `32` | Ample subspace expressivity to internalize complex multi-step security reasoning without dimensionality collapse |
-| **LoRA Alpha ($\alpha$)** | `64` | Scaling ratio $\alpha/r = 2.0$, providing optimal gradient propagation stability to low-rank matrices |
+| **LoRA Rank (r)** | `32` | Ample subspace expressivity to internalize complex multi-step security reasoning without dimensionality collapse |
+| **LoRA Alpha (α)** | `64` | Scaling ratio α/r = 2.0, providing optimal gradient propagation stability to low-rank matrices |
 | **LoRA Dropout** | `0.05` | Stochastic regularization preventing premature memorization of golden anchor patterns |
 | **Target Modules** | `all-linear` | Injects low-rank adapters across `qkv_proj`, `o_proj`, `gate_up_proj`, and `down_proj` |
 | **Max Context Window** | `4,096` tokens | Accommodates lengthy application logs, binary disassembly traces, and multi-file source snippets |
@@ -153,8 +153,8 @@ Each question was presented in ChatML format with explicit instructions to formu
 
 | Metric | microsoft/Phi-4-mini-instruct (Base) | CyberRott 1.0 (Ours) | Relative Delta / Advantage |
 | :--- | :---: | :---: | :---: |
-| **Generative CoT Accuracy** | 32.16% | **36.08%** | **+3.92% absolute gain (+12.2% relative, $p < 0.001$)** |
-| **Standard Error ($\sigma$)** | ±1.05% (`0.010478`) | ±1.08% (`0.010774`) | Robust sample precision |
+| **Generative CoT Accuracy** | 32.16% | **36.08%** | **+3.92% absolute gain (+12.2% relative, p < 0.001)** |
+| **Standard Error (σ)** | ±1.05% (`0.010478`) | ±1.08% (`0.010774`) | Robust sample precision |
 | **95% Confidence Interval** | [30.11%, 34.21%] | **[33.97%, 38.20%]** | Statistically significant margin |
 | **Correct Answers** | 639 / 1,987 | **717 / 1,987** | **+78 additional verified answers** |
 | **Disjoint Accuracy Shift** | — | **366 questions** | CyberRott solved correctly where Base failed |
