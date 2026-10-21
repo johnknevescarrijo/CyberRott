@@ -1,34 +1,34 @@
 Compartilhando os resultados do CyberRott 1.0, um projeto prático focado em fine-tuning e raciocínio técnico voltado para cibersegurança.
 
-O objetivo foi adaptar um modelo compacto (SLM de 3.8B parâmetros, baseado no Phi-4-mini da Microsoft) para rodar localmente no endpoint/workstation com suporte a Chain-of-Thought (CoT) para análise de vulnerabilidades e fluxo de dados.
+O objetivo foi adaptar um SLM compacto (3.8B parâmetros, baseado no Phi-4-mini da Microsoft) para rodar localmente no endpoint/workstation com raciocínio Chain-of-Thought (CoT) para análise de código e vulnerabilidades.
 
 Pipeline e Treinamento:
-• Dados: Base de raciocínio da NVIDIA (GooseReason) filtrada para tópicos de segurança, complementada com cenários analíticos complexos gerados via Gemini 4 Argon.
-• Treinamento: Fine-tuning supervisionado com LoRA (BF16, all-linear) executado no Google Colab utilizando uma GPU A100.
-• Quantização: Conversão para formato GGUF, permitindo execução local eficiente via Ollama ou llama.cpp sem necessidade de GPUs de alto custo.
+• Dados: Base de raciocínio da NVIDIA (GooseReason) filtrada para segurança + cenários complexos gerados via Gemini 4 Argon.
+• Treinamento: Fine-tuning LoRA (BF16, all-linear) no Google Colab com GPU A100.
+• Quantização: GGUF pronto para rodar leve no Ollama sem necessidade de hardware caro.
 
-Resultados do Benchmark (WMDP-Cyber em GPU L4):
-Avaliado contra as 1.987 questões do benchmark WMDP-Cyber (CAIS) utilizando uma GPU L4 com vLLM, os dados trouxeram um contraste interessante:
+Resultados no Benchmark (WMDP-Cyber com GPU L4):
+Avaliado nas 1.987 questões do benchmark WMDP-Cyber (CAIS) via vLLM:
 
 1. Avaliação Direta (Sem CoT / Not CoT):
-No teste clássico de loglikelihood (resposta direta sem etapa de pensamento), a diferença entre o modelo original da Microsoft e o CyberRott foi praticamente nula (43.03% vs 43.18%). Isso confirmou que a adaptação preservou a base de conhecimento do modelo sem sofrer de esquecimento catastrófico.
+No teste direto (loglikelihood), a diferença entre o modelo base da Microsoft e o CyberRott foi praticamente nula (43.03% vs 43.18%). Isso confirmou retenção da base geral sem esquecimento catastrófico.
 
 2. Avaliação com Raciocínio (Chain-of-Thought / CoT):
-Quando o modelo foi submetido à geração aberta com raciocínio intermediário (<think>...</think>), a diferença foi considerável: 36.08% de acurácia contra 32.16% do modelo base (+3.92% de ganho absoluto), além de uma redução de cerca de 5x em falhas de extração e respostas evasivas. O modelo passou a estruturar a cadeia lógica (vetor de entrada, taint analysis, sink e mitigação) antes de emitir a resposta.
+Na geração aberta com raciocínio intermediário (<think>...</think>), a diferença foi considerável: 36.08% de acurácia contra 32.16% do original (+3.92% de ganho absoluto), além de reduzir em 5x erros de recusa e formatação. O modelo passou a estruturar a cadeia lógica (vetor, taint analysis, sink e mitigação) antes do veredito.
 
-Limitações Conhecidas desta Versão Inicial (v1.0):
-Por ser uma prova de conceito focada estritamente em raciocínio técnico e tarefas de segurança, o modelo não passou por alinhamento para conversação casual (chitchat). Perguntas genéricas ou sociais ("olá, qual é o seu nome?") estão fora de distribuição (out-of-distribution) e podem gerar alucinações de identidade herdadas do pré-treino. O modelo foi projetado especificamente para prompts técnicos de análise de código, mitigação e exploração.
+Limitações Conhecidas (v1.0):
+Como o foco foi 100% em raciocínio técnico, o modelo não passou por alinhamento para conversação casual (chitchat). Perguntas genéricas ("qual seu nome?") estão fora de distribuição e podem gerar alucinações de identidade herdadas do pré-treino. Seu ponto forte é a análise técnica de segurança.
 
 Próximos Passos:
-1. Incluir alinhamento de persona (Identity SFT) para responder adequadamente a saudações sem desviar da identidade.
-2. Aumentar o volume e a granularidade dos dados de segurança.
-3. Aplicar Aprendizado por Reforço (Reinforcement Learning) para guiar o raciocínio e buscar um salto maior de acurácia.
+1. Alinhamento de persona (Identity SFT) para responder a saudações sem desvios.
+2. Escalar volume e diversidade dos dados.
+3. Aplicar Aprendizado por Reforço (RL) para guiar o raciocínio e buscar ganhos maiores.
 
-Como testar localmente via Ollama (download automático via Hugging Face):
+Como testar no Ollama (1 comando, download automático):
 ollama run hf.co/johnknevescarrijo/CyberRott-Phi4-mini-Instruct
 
-Links do projeto:
-• Hugging Face (Pesos, GGUF e Model Card): https://huggingface.co/johnknevescarrijo/CyberRott-Phi4-mini-Instruct
-• Repositório GitHub (Código, scripts e notebook): https://github.com/johnknevescarrijo/CyberRott1.0
+Links:
+• Hugging Face (Pesos e GGUF): https://huggingface.co/johnknevescarrijo/CyberRott-Phi4-mini-Instruct
+• GitHub (Código e notebook): https://github.com/johnknevescarrijo/CyberRott1.0
 
-#Cibersegurança #MachineLearning #ArtificialIntelligence #HuggingFace #Ollama #FineTuning #OpenSource #InfoSec
+#Cibersegurança #MachineLearning #IA #HuggingFace #Ollama #FineTuning #OpenSource #InfoSec
