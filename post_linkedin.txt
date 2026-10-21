@@ -16,12 +16,15 @@ No teste clássico de loglikelihood (resposta direta sem etapa de pensamento), a
 2. Avaliação com Raciocínio (Chain-of-Thought / CoT):
 Quando o modelo foi submetido à geração aberta com raciocínio intermediário (<think>...</think>), a diferença foi considerável: 36.08% de acurácia contra 32.16% do modelo base (+3.92% de ganho absoluto), além de uma redução de cerca de 5x em falhas de extração e respostas evasivas. O modelo passou a estruturar a cadeia lógica (vetor de entrada, taint analysis, sink e mitigação) antes de emitir a resposta.
 
-Próximos Passos:
-Esta é a versão inicial do projeto. Para as próximas iterações, os objetivos são:
-1. Escalar o volume e a granularidade do dataset de treino com mais fontes técnicas.
-2. Aplicar Aprendizado por Reforço (Reinforcement Learning) com recompensas estruturadas para refinar ainda mais a coerência do raciocínio e buscar um salto maior de acurácia.
+Limitações Conhecidas desta Versão Inicial (v1.0):
+Por ser uma prova de conceito focada estritamente em raciocínio técnico e tarefas de segurança, o modelo não passou por alinhamento para conversação casual (chitchat). Perguntas genéricas ou sociais ("olá, qual é o seu nome?") estão fora de distribuição (out-of-distribution) e podem gerar alucinações de identidade herdadas do pré-treino. O modelo foi projetado especificamente para prompts técnicos de análise de código, mitigação e exploração.
 
-Como testar localmente via Ollama (1 comando):
+Próximos Passos:
+1. Incluir alinhamento de persona (Identity SFT) para responder adequadamente a saudações sem desviar da identidade.
+2. Aumentar o volume e a granularidade dos dados de segurança.
+3. Aplicar Aprendizado por Reforço (Reinforcement Learning) para guiar o raciocínio e buscar um salto maior de acurácia.
+
+Como testar localmente via Ollama (download automático via Hugging Face):
 ollama run hf.co/johnknevescarrijo/CyberRott-Phi4-mini-Instruct
 
 Links do projeto:

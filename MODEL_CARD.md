@@ -302,6 +302,7 @@ ollama run cyberrott:latest
 > **Operational Warning**:
 > - The model exhibits deep technical knowledge regarding binary exploitation, kernel callbacks, network protocols, and cryptographic vulnerabilities. Using this model to target systems without prior explicit written authorization is strictly prohibited and unlawful.
 > - While structured CoT dramatically curtails hallucinations, automated outputs must be verified by certified information security practitioners before pushing remediation patches or altering security architectures.
+> - **Domain Specialization & Conversational Limitations**: CyberRott 1.0 was trained exclusively on analytical reasoning trajectories for technical cybersecurity tasks. It is intentionally not aligned as a general-purpose conversational chatbot. Casual dialogue, social chitchat, or unconditioned identity inquiries (e.g., *"What is your name?"*) fall out-of-distribution and may surface pre-training artifacts or identity confusion. The model's optimal operating envelope is technical security prompts. Roadmap plans for v2.0 include persona-grounding SFT and Reinforcement Learning (RL) alignment.
 > - The developers and contributors disclaim any liability for illicit, negligent, or malicious actions executed with the assistance of this software.
 
 ---
