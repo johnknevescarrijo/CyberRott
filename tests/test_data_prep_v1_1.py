@@ -43,12 +43,12 @@ class TestDatasetCatalog:
         for key in expected_keys:
             assert key in CYBERROTT_V1_1_DATASETS, f"Chave '{key}' ausente no catálogo oficial."
 
-    def test_catalog_targets_reach_ten_thousand(self):
+    def test_catalog_targets_balanced_quota(self):
         total_samples = sum(cfg["target_samples"] for cfg in CYBERROTT_V1_1_DATASETS.values())
-        assert total_samples >= 10000, f"Total alvo do catálogo ({total_samples}) deve ser >= 10.000 sequências."
+        assert total_samples >= 4000, f"Total alvo do catálogo ({total_samples}) deve ser >= 4.000 sequências."
 
     def test_catalog_specific_quotas(self):
-        assert CYBERROTT_V1_1_DATASETS["goose_reason"]["target_samples"] == 7500
+        assert CYBERROTT_V1_1_DATASETS["goose_reason"]["target_samples"] == 1500
         assert CYBERROTT_V1_1_DATASETS["code_feedback"]["target_samples"] == 1000
         assert CYBERROTT_V1_1_DATASETS["open_r1"]["target_samples"] == 800
         assert CYBERROTT_V1_1_DATASETS["cyber_native"]["target_samples"] == 500
@@ -267,7 +267,7 @@ class TestCommandLineInterface:
         assert "CYBERROTT 1.1 - CATÁLOGO OFICIAL DE DATASETS ZERO-API COST" in res.stdout
         assert "nvidia/Nemotron-Research-GooseReason-0.7M" in res.stdout
         assert "CyberNative/Code_Vulnerability_Security_DPO" in res.stdout
-        assert "TOTAL ALVO EXTERNO: ~10,200" in res.stdout
+        assert "TOTAL ALVO EXTERNO: ~4,200" in res.stdout
 
     def test_cli_help_flag(self):
         res = subprocess.run(
@@ -278,5 +278,17 @@ class TestCommandLineInterface:
         )
         assert "--preset" in res.stdout
         assert "--list_datasets" in res.stdout
+        assert "--goose_limit" in res.stdout
         assert "--scrub_refusals" in res.stdout
         assert "--enforce_think_tags" in res.stdout
+
+    def test_cli_goose_limit_flag(self):
+        res = subprocess.run(
+            ["python3", "scripts/data_prep.py", "--goose_limit", "500", "--list_datasets"],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        assert "500" in res.stdout
+        assert "TOTAL ALVO EXTERNO: ~3,200" in res.stdout
+

@@ -34,7 +34,7 @@ CYBERROTT_V1_1_DATASETS: Dict[str, Dict[str, Any]] = {
     "goose_reason": {
         "repo_id": "nvidia/Nemotron-Research-GooseReason-0.7M",
         "name": "NVIDIA GooseReason-0.7M",
-        "target_samples": 7500,
+        "target_samples": 1500,
         "requires_cyber_filter": True,
         "domain": "Deep Reasoning & Code Logic",
         "description": "Corpus principal de raciocínio analítico da NVIDIA com cadeias de dedução formal.",
@@ -697,7 +697,7 @@ def print_dataset_catalog():
         print(f"{key:<16} {cfg['repo_id']:<44} {cfg['target_samples']:<12} {filter_str:<14} {cfg['domain']}")
     print("-" * 105)
     print(f"TOTAL ALVO EXTERNO: ~{total_target:,} sequências de alta densidade analítica.")
-    print(f"TOTAL COM ÂNCORAS DE OURO: ~{total_target + 320:,} sequências (cumprindo a meta de ~10,000 do Roadmap v1.1).")
+    print(f"TOTAL COM ÂNCORAS DE OURO: ~{total_target + 320:,} sequências (dataset balanceado de alta densidade do Roadmap v1.1).")
     print(header + "\n")
 
 # =============================================================================
@@ -714,17 +714,21 @@ def prepare_dataset(
     scrub_refusals: bool = True,
     enforce_think: bool = True,
     output_file: str = "cyberrott_final_train.jsonl",
-    seed: int = 42
+    seed: int = 42,
+    goose_limit: Optional[int] = None
 ) -> List[Dict[str, Any]]:
     """
     Função principal de preparação e fusão de dados do CyberRott:
     - Fallback inteligente se anchor_file não existir diretamente (ex: busca em 'data/').
-    - Ingestão do catálogo aberto v1.1 (~10.5k amostras CoT) ou streaming v1.0.
+    - Ingestão do catálogo aberto v1.1 (~4.5k-5k amostras CoT) ou streaming v1.0.
     - Scrubber de recusas e remoção de disclaimers moralistas.
     - Normalização de tags CoT para <think>...</think>.
     - Desduplicação determinística com preservação de âncoras de ouro.
     - Criação garantida do diretório de destino e exportação JSONL.
     """
+    if goose_limit is not None:
+        CYBERROTT_V1_1_DATASETS["goose_reason"]["target_samples"] = goose_limit
+
     # Fallback automático se anchor_file não existir no caminho especificado
     if not os.path.exists(anchor_file):
         fallback_candidate = os.path.join("data", anchor_file)
@@ -740,6 +744,8 @@ def prepare_dataset(
     print(f"• Random Seed:    {seed}")
     print(f"• Scrub Refusals: {'Ativado' if scrub_refusals else 'Desativado'}")
     print(f"• Enforce <think>: {'Ativado' if enforce_think else 'Desativado'}")
+    if goose_limit is not None:
+        print(f"• Goose Limit:    {goose_limit}")
     print("-" * 75)
 
     # 1. Carregar Amostras Âncora
@@ -764,12 +770,13 @@ def prepare_dataset(
     else:
         # Modo clássico v1.0 (retrocompatibilidade)
         target_repo = hf_dataset or "nvidia/Nemotron-Research-GooseReason-0.7M"
-        if max_hf_samples > 0:
-            print(f"[*] Modo v1.0 Clássico: Ingestão de '{target_repo}' (máx: {max_hf_samples})...")
+        limit = goose_limit if goose_limit is not None else max_hf_samples
+        if limit > 0:
+            print(f"[*] Modo v1.0 Clássico: Ingestão de '{target_repo}' (máx: {limit})...")
             try:
                 hf_samples = fetch_single_dataset_stream(
                     dataset_name=target_repo,
-                    max_samples=max_hf_samples,
+                    max_samples=limit,
                     cyber_regex=cyber_regex,
                     scrub_refusals=scrub_refusals,
                     enforce_think=enforce_think
@@ -899,7 +906,18 @@ if __name__ == "__main__":
         help="Garantir e estruturar blocos <think>...</think> de raciocínio CoT em todas as respostas"
     )
 
+    parser.add_argument(
+        "--goose_limit", "--goose-limit",
+        dest="goose_limit",
+        type=int,
+        default=None,
+        help="Limite customizado de amostras para o GooseReason (sobrescreve target_samples padrão de goose_reason)"
+    )
+
     args = parser.parse_args()
+
+    if args.goose_limit is not None:
+        CYBERROTT_V1_1_DATASETS["goose_reason"]["target_samples"] = args.goose_limit
 
     if args.list_datasets:
         print_dataset_catalog()
@@ -915,5 +933,7 @@ if __name__ == "__main__":
         scrub_refusals=args.scrub_refusals,
         enforce_think=args.enforce_think_tags,
         output_file=args.output,
-        seed=args.seed
+        seed=args.seed,
+        goose_limit=args.goose_limit
     )
+
