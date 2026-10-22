@@ -10,6 +10,7 @@ import os
 import gc
 import inspect
 import argparse
+from typing import Optional, Dict, Any
 import torch
 
 # Otimizações de alocação de memória CUDA e desativação do W&B
@@ -116,8 +117,9 @@ def parse_args():
         help="Nome do dataset no Hugging Face Hub (se aplicável)."
     )
     data_group.add_argument(
-        "--data_file",
+        "--data_file", "--data_path",
         type=str,
+        dest="data_file",
         default="cyberrott_final_train.jsonl",
         help="Caminho do arquivo JSONL local com os dados de treino."
     )
@@ -167,8 +169,9 @@ def parse_args():
         help="Diretório onde os pesos adaptadores LoRA serão salvos."
     )
     train_group.add_argument(
-        "--num_train_epochs",
+        "--num_train_epochs", "--epochs",
         type=int,
+        dest="num_train_epochs",
         default=3,
         help="Número total de épocas de treinamento."
     )

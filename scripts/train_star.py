@@ -93,7 +93,7 @@ def setup_hardware_optimizations(args: Optional[argparse.Namespace] = None) -> D
 # Argumentos de Linha de Comando (CLI)
 # ==============================================================================
 
-def parse_args():
+def parse_args(args_list: Optional[List[str]] = None):
     parser = argparse.ArgumentParser(
         description="CyberRott 1.1 - Pipeline de Treinamento Iterativo STaR / Rejection Sampling"
     )
@@ -101,7 +101,8 @@ def parse_args():
     # 1. Configurações de Dados e Problemas
     data_group = parser.add_argument_group("Problemas e Datasets")
     data_group.add_argument(
-        "--problem_file",
+        "--problem_file", "--problem-file",
+        dest="problem_file",
         type=str,
         default="data/dataset_cyber_ready.jsonl",
         help="Arquivo JSONL contendo a suíte de problemas/prompts para os rollouts."
@@ -113,13 +114,15 @@ def parse_args():
         help="Limita a quantidade de problemas processados (ideal para testes rápidos)."
     )
     data_group.add_argument(
-        "--anchor_file",
+        "--anchor_file", "--anchor-file",
+        dest="anchor_file",
         type=str,
         default="data/dataset_cyber_ready.jsonl",
         help="Arquivo JSONL de amostras âncora de ouro para retenção de conhecimento."
     )
     data_group.add_argument(
-        "--anchor_upsample",
+        "--anchor_upsample", "--anchor-upsample",
+        dest="anchor_upsample",
         type=int,
         default=5,
         help="Fator de repetição/upsampling das amostras âncora por iteração (0 para desativar)."
@@ -128,13 +131,15 @@ def parse_args():
     # 2. Configurações do Ciclo STaR
     star_group = parser.add_argument_group("Ciclo STaR e Rejection Sampling")
     star_group.add_argument(
-        "--star_iterations",
+        "--star_iterations", "--iterations", "--star-iterations",
+        dest="star_iterations",
         type=int,
         default=1,
         help="Número de iterações do ciclo STaR (Rollout -> Verifier -> SFT Update)."
     )
     star_group.add_argument(
-        "--num_candidates",
+        "--num_candidates", "--num-candidates",
+        dest="num_candidates",
         type=int,
         default=4,
         help="Número N de trajetórias exploratórias geradas por problema (padrão: 4, sugerido: 4 a 8)."
@@ -164,14 +169,16 @@ def parse_args():
         help="Máximo de tokens gerados por candidato exploratório."
     )
     star_group.add_argument(
-        "--rollout_backend",
+        "--rollout_backend", "--backend", "--rollout-backend",
+        dest="rollout_backend",
         type=str,
         default="hf",
         choices=["hf", "vllm", "mock"],
         help="Backend de inferência para os rollouts ('vllm' para batching de alta velocidade, 'hf' para nativo, 'mock' para simulação)."
     )
     star_group.add_argument(
-        "--dry_run",
+        "--dry_run", "--dry-run",
+        dest="dry_run",
         action="store_true",
         help="Modo de simulação rápida determinística (executa todo o pipeline em CPU sem carregar pesos de 4B)."
     )
@@ -200,13 +207,15 @@ def parse_args():
     # 4. Configurações do Modelo e LoRA
     model_group = parser.add_argument_group("Modelo Base e LoRA")
     model_group.add_argument(
-        "--model_name_or_path",
+        "--model_name_or_path", "--model_path", "--model-path", "--model-name-or-path",
+        dest="model_name_or_path",
         type=str,
         default="microsoft/Phi-4-mini-instruct",
-        help="Modelo base inicial para a primeira iteração STaR."
+        help="Modelo base inicial ou checkpoint LoRA prévio para a primeira iteração STaR."
     )
     model_group.add_argument(
-        "--initial_adapter",
+        "--initial_adapter", "--adapter_path", "--adapter-path",
+        dest="initial_adapter",
         type=str,
         default=None,
         help="Caminho opcional para adaptador LoRA existente (ex: checkpoint do CyberRott 1.0)."
@@ -253,7 +262,8 @@ def parse_args():
     # 5. Hiperparâmetros de Treinamento SFT
     train_group = parser.add_argument_group("Hiperparâmetros de Treinamento")
     train_group.add_argument(
-        "--output_dir",
+        "--output_dir", "--output-dir",
+        dest="output_dir",
         type=str,
         default="./CyberRott-Phi4-STaR",
         help="Diretório de saída para checkpoints, datasets curados e telemetria."
@@ -307,7 +317,7 @@ def parse_args():
         help="Auto-otimiza batch size, TF32 e FlashAttention para A100/H100/L4 (padrão: True)."
     )
 
-    return parser.parse_args()
+    return parser.parse_args(args_list)
 
 
 # ==============================================================================
@@ -326,7 +336,12 @@ def load_problem_suite(problem_file: str, max_problems: Optional[int] = None) ->
     ('prompt', 'question', 'expected_cwe', 'answer', etc.).
     """
     if not os.path.exists(problem_file):
-        raise FileNotFoundError(f"Arquivo de problemas '{problem_file}' não encontrado.")
+        fallback = os.path.join("data", problem_file)
+        if os.path.exists(fallback):
+            print(f"[*] Fallback de suíte de problemas: '{problem_file}' -> '{fallback}'")
+            problem_file = fallback
+        else:
+            raise FileNotFoundError(f"Arquivo de problemas '{problem_file}' não encontrado.")
 
     problems = []
     with open(problem_file, "r", encoding="utf-8") as f:
@@ -392,8 +407,16 @@ def load_gold_anchors(anchor_file: str, upsample_factor: int = 1) -> List[Dict[s
     Carrega amostras âncora de ouro no formato ChatML e aplica upsampling,
     garantindo retenção de conhecimento e prevenção de catastrophic forgetting.
     """
-    if not anchor_file or not os.path.exists(anchor_file) or upsample_factor <= 0:
+    if not anchor_file or upsample_factor <= 0:
         return []
+
+    if not os.path.exists(anchor_file):
+        fallback = os.path.join("data", anchor_file)
+        if os.path.exists(fallback):
+            print(f"[*] Fallback de âncora STaR: '{anchor_file}' -> '{fallback}'")
+            anchor_file = fallback
+        else:
+            return []
 
     anchors = []
     with open(anchor_file, "r", encoding="utf-8") as f:
@@ -427,6 +450,7 @@ class RolloutGenerator:
     """
     Gerencia a geração de N trajetórias candidatas por problema.
     Suporta os backends 'vllm', 'hf' (Hugging Face Transformers + PEFT) e 'mock'.
+    Otimizado para prevenção de OOM na L4 (24GB) com descarregamento dinâmico de VRAM.
     """
 
     def __init__(
@@ -453,27 +477,100 @@ class RolloutGenerator:
         self.model = None
         self.vllm_engine = None
 
+        self._hf_model = None
+        self._hf_tokenizer = None
+        self._vllm_engine = None
+
         if self.backend != "mock":
             self._init_backend()
 
-    def _init_backend(self):
-        """Inicializa o backend selecionado (vLLM ou HF Transformers)."""
-        from transformers import AutoTokenizer
+    def _init_hf(self):
+        """
+        Inicializa o backend Hugging Face com suporte nativo a Checkpoints LoRA:
+        Se model_name_or_path contiver adapter_config.json, carrega o modelo base
+        em bfloat16, anexa o adaptador PeftModel e executa merge_and_unload()
+        para inferência ultrarrápida sem overhead de adapters.
+        """
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+        from peft import PeftModel
 
-        print(f"[{self.backend.upper()}] Carregando tokenizer de {self.model_name_or_path}...")
+        dtype = getattr(torch, self.torch_dtype)
+        adapter_cfg_file = os.path.join(self.model_name_or_path, "adapter_config.json")
+        is_lora_checkpoint = os.path.isdir(self.model_name_or_path) and os.path.isfile(adapter_cfg_file)
+
+        if is_lora_checkpoint:
+            try:
+                with open(adapter_cfg_file, "r", encoding="utf-8") as f:
+                    cfg_data = json.load(f)
+                base_model_name = cfg_data.get("base_model_name_or_path", "microsoft/Phi-4-mini-instruct")
+            except Exception:
+                base_model_name = "microsoft/Phi-4-mini-instruct"
+
+            print(f"[HF] Checkpoint LoRA detectado em: {self.model_name_or_path}")
+            print(f"[HF] Carregando modelo base '{base_model_name}' em {self.torch_dtype}...")
+            base_model = AutoModelForCausalLM.from_pretrained(
+                base_model_name,
+                torch_dtype=dtype,
+                attn_implementation=self.attn_implementation,
+                device_map="auto" if torch.cuda.is_available() else "cpu",
+                trust_remote_code=False,
+            )
+            print(f"[HF] Mesclando pesos LoRA de '{self.model_name_or_path}' via merge_and_unload()...")
+            peft_m = PeftModel.from_pretrained(base_model, self.model_name_or_path)
+            self.model = peft_m.merge_and_unload()
+            tokenizer_source = (
+                self.model_name_or_path
+                if os.path.exists(os.path.join(self.model_name_or_path, "tokenizer_config.json"))
+                else base_model_name
+            )
+        else:
+            print(f"[HF] Carregando modelo base em {self.torch_dtype} de: {self.model_name_or_path}...")
+            self.model = AutoModelForCausalLM.from_pretrained(
+                self.model_name_or_path,
+                torch_dtype=dtype,
+                attn_implementation=self.attn_implementation,
+                device_map="auto" if torch.cuda.is_available() else "cpu",
+                trust_remote_code=False,
+            )
+            tokenizer_source = self.model_name_or_path
+
+            # Se houver adaptador LoRA salvo adicional
+            if self.adapter_path and os.path.exists(self.adapter_path):
+                print(f"[HF] Carregando e mesclando adaptador LoRA anterior de: {self.adapter_path}")
+                peft_m = PeftModel.from_pretrained(self.model, self.adapter_path)
+                self.model = peft_m.merge_and_unload()
+
+        print(f"[HF] Carregando tokenizer de: {tokenizer_source}...")
         self.tokenizer = AutoTokenizer.from_pretrained(
-            self.model_name_or_path,
+            tokenizer_source,
             trust_remote_code=False
         )
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
+        self._hf_model = self.model
+        self._hf_tokenizer = self.tokenizer
+        self.model.eval()
+
+    def _init_backend(self):
+        """Inicializa o backend selecionado (vLLM ou HF Transformers)."""
         if self.backend == "vllm":
             try:
                 from vllm import LLM
+                from transformers import AutoTokenizer
+
+                print(f"[vLLM] Carregando tokenizer de {self.model_name_or_path}...")
+                self.tokenizer = AutoTokenizer.from_pretrained(
+                    self.model_name_or_path,
+                    trust_remote_code=False
+                )
+                if self.tokenizer.pad_token is None:
+                    self.tokenizer.pad_token = self.tokenizer.eos_token
+                self._hf_tokenizer = self.tokenizer
+
                 total_mem = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3) if torch.cuda.is_available() else 16
                 gpu_util = 0.90 if total_mem >= 35.0 else 0.85
-                print(f"[vLLM] Inicializando motor de inferência vLLM com {self.torch_dtype} (VRAM: {total_mem:.1f}GB, gpu_memory_utilization={gpu_util})...")
+                print(f"[vLLM] Inicializando motor vLLM com {self.torch_dtype} (VRAM: {total_mem:.1f}GB, gpu_memory_utilization={gpu_util})...")
                 self.vllm_engine = LLM(
                     model=self.model_name_or_path,
                     trust_remote_code=False,
@@ -482,30 +579,43 @@ class RolloutGenerator:
                     gpu_memory_utilization=gpu_util,
                     enforce_eager=False,
                 )
+                self._vllm_engine = self.vllm_engine
             except Exception as e:
                 print(f"[Aviso] Falha ao inicializar vLLM ({e}). Alternando para backend 'hf'...")
                 self.backend = "hf"
+                self._init_hf()
 
-        if self.backend == "hf":
-            from transformers import AutoModelForCausalLM
-            from peft import PeftModel
+        elif self.backend == "hf":
+            self._init_hf()
 
-            dtype = getattr(torch, self.torch_dtype)
-            print(f"[HF] Carregando modelo base em {self.torch_dtype}...")
-            self.model = AutoModelForCausalLM.from_pretrained(
-                self.model_name_or_path,
-                torch_dtype=dtype,
-                attn_implementation=self.attn_implementation,
-                device_map="auto" if torch.cuda.is_available() else "cpu",
-                trust_remote_code=False,
-            )
+    def unload(self):
+        """
+        Prevenção de OOM na GPU L4 (24GB):
+        Remove referências a modelos HF, tokenizers e motor vLLM, forçando
+        coleta de lixo (gc.collect) e esvaziamento do cache CUDA (torch.cuda.empty_cache).
+        """
+        print("[RolloutGenerator] Descarregando motor de inferência e liberando memória VRAM...")
+        self.model = None
+        self._hf_model = None
+        self.tokenizer = None
+        self._hf_tokenizer = None
+        self.vllm_engine = None
+        self._vllm_engine = None
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
-            # Se houver adaptador LoRA salvo de iteração anterior, anexa ao modelo
-            if self.adapter_path and os.path.exists(self.adapter_path):
-                print(f"[HF] Carregando adaptador LoRA STaR anterior de: {self.adapter_path}")
-                self.model = PeftModel.from_pretrained(self.model, self.adapter_path)
+    def close(self):
+        """Alias para unload()."""
+        self.unload()
 
-            self.model.eval()
+    def generate_candidates(
+        self,
+        problems: List[Dict[str, Any]],
+        num_candidates: int
+    ) -> List[List[str]]:
+        """Gera N candidatos exploratórios por problema (alias para generate_rollouts)."""
+        return self.generate_rollouts(problems, num_candidates)
 
     def generate_rollouts(
         self,
@@ -799,32 +909,34 @@ def execute_rejection_sampling(
 
 
 # ==============================================================================
-# Fase 3: Fine-Tuning LoRA / SFT Iterativo (Checkpoint Update)
+# Fase 3: Fine-Tuning LoRA / SFT Iterativo (run_sft_update)
 # ==============================================================================
 
-def execute_sft_iteration(
+def run_sft_update(
     iteration: int,
     train_file: str,
     output_checkpoint_dir: str,
     args: argparse.Namespace,
-    base_model_path: str,
+    model_path: str,
     adapter_path_prev: Optional[str] = None,
 ) -> str:
     """
     Executa o fine-tuning SFT LoRA sobre o dataset curado pela verificação STaR.
     Em modo --dry_run, simula a etapa gerando o diretório de checkpoint.
+    Suporta continuidade e acúmulo contínuo de aprendizado sobre checkpoints LoRA
+    anteriores sem falhar no AutoModelForCausalLM.from_pretrained.
     """
     print(f"\n[STaR Iteração {iteration}] Iniciando Fine-Tuning LoRA...")
     print(f"Dataset Curado:      {train_file}")
+    print(f"Modelo / Checkpoint: {model_path}")
     print(f"Checkpoint Destino:  {output_checkpoint_dir}")
 
     if args.dry_run:
         print("[Dry Run] Simulação rápida da iteração SFT LoRA ativada.")
         os.makedirs(output_checkpoint_dir, exist_ok=True)
-        # Salva metadados simulados de checkpoint
         dummy_meta = {
             "iteration": iteration,
-            "base_model": base_model_path,
+            "base_model_name_or_path": model_path,
             "train_file": train_file,
             "timestamp": datetime.now().isoformat(),
             "status": "dry_run_completed",
@@ -846,24 +958,53 @@ def execute_sft_iteration(
     from peft import LoraConfig, TaskType, PeftModel
     from trl import SFTTrainer, SFTConfig
 
-    tokenizer = AutoTokenizer.from_pretrained(base_model_path, trust_remote_code=False)
+    dtype = getattr(torch, args.torch_dtype)
+
+    # Detecção contínua de checkpoint LoRA prévio (adapter_config.json)
+    adapter_cfg_file = os.path.join(model_path, "adapter_config.json")
+    is_lora_checkpoint = os.path.isdir(model_path) and os.path.isfile(adapter_cfg_file)
+
+    if is_lora_checkpoint:
+        try:
+            with open(adapter_cfg_file, "r", encoding="utf-8") as f:
+                cfg_data = json.load(f)
+            real_base = cfg_data.get("base_model_name_or_path", "microsoft/Phi-4-mini-instruct")
+        except Exception:
+            real_base = "microsoft/Phi-4-mini-instruct"
+
+        print(f"[STaR LoRA Update] Checkpoint LoRA prévio detectado em '{model_path}'.")
+        print(f"[STaR LoRA Update] Carregando modelo base '{real_base}' em {args.torch_dtype}...")
+        base_model = AutoModelForCausalLM.from_pretrained(
+            real_base,
+            torch_dtype=dtype,
+            attn_implementation=args.attn_implementation,
+            device_map="auto" if torch.cuda.is_available() else "cpu",
+            trust_remote_code=False,
+        )
+        print(f"[STaR LoRA Update] Mesclando adaptador anterior de '{model_path}' via merge_and_unload()...")
+        model = PeftModel.from_pretrained(base_model, model_path).merge_and_unload()
+        tokenizer_source = (
+            model_path
+            if os.path.exists(os.path.join(model_path, "tokenizer_config.json"))
+            else real_base
+        )
+    else:
+        print(f"[STaR SFT Update] Carregando modelo base de '{model_path}' em {args.torch_dtype}...")
+        model = AutoModelForCausalLM.from_pretrained(
+            model_path,
+            torch_dtype=dtype,
+            attn_implementation=args.attn_implementation,
+            device_map="auto" if torch.cuda.is_available() else "cpu",
+            trust_remote_code=False,
+        )
+        if adapter_path_prev and os.path.exists(adapter_path_prev) and adapter_path_prev != model_path:
+            print(f"[STaR SFT Update] Mesclando adaptador anterior adicional: {adapter_path_prev}")
+            model = PeftModel.from_pretrained(model, adapter_path_prev).merge_and_unload()
+        tokenizer_source = model_path
+
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_source, trust_remote_code=False)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-
-    dtype = getattr(torch, args.torch_dtype)
-    model = AutoModelForCausalLM.from_pretrained(
-        base_model_path,
-        torch_dtype=dtype,
-        attn_implementation=args.attn_implementation,
-        device_map="auto" if torch.cuda.is_available() else "cpu",
-        trust_remote_code=False,
-    )
-
-    # Se houver adaptador anterior, funde ou anexa
-    if adapter_path_prev and os.path.exists(adapter_path_prev):
-        print(f"Carregando e mesclando pesos do adaptador anterior: {adapter_path_prev}")
-        model = PeftModel.from_pretrained(model, adapter_path_prev)
-        model = model.merge_and_unload()
 
     # Configuração LoRA consistente com train_colab.py
     target_modules = "all-linear" if args.target_modules.strip().lower() == "all-linear" else [
@@ -943,9 +1084,8 @@ def execute_sft_iteration(
     trainer.save_model(output_checkpoint_dir)
     tokenizer.save_pretrained(output_checkpoint_dir)
 
-    # Liberação de memória VRAM
-    del trainer
-    del model
+    # Prevenção rigorosa de OOM: Desaloca trainer e modelo, esvazia cache CUDA
+    del trainer, model
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -953,12 +1093,23 @@ def execute_sft_iteration(
     return output_checkpoint_dir
 
 
+# Alias para retrocompatibilidade
+execute_sft_iteration = run_sft_update
+
+
 # ==============================================================================
-# Orquestrador Principal do Loop STaR
+# Orquestrador Principal do Loop STaR (run_star_pipeline)
 # ==============================================================================
 
-def main():
-    args = parse_args()
+def run_star_pipeline(args: argparse.Namespace) -> Optional[str]:
+    """
+    Executa o ciclo iterativo completo STaR:
+    1. Rollout exploratório com geração de N trajetórias.
+    2. Liberação imediata de VRAM (generator.unload() + empty_cache) para prevenir OOM na L4.
+    3. Verificação Determinística de 3 Pilares e Rejection Sampling.
+    4. Curadoria e fusão de dados com Âncoras de Ouro.
+    5. Atualização LoRA incremental (run_sft_update) acumulando aprendizado checkpoint a checkpoint.
+    """
     hw_profile = setup_hardware_optimizations(args)
     start_total_time = time.time()
 
@@ -970,6 +1121,7 @@ def main():
     print(f"Hardware GPU:             {hw_profile['device_name']} ({hw_profile['vram_gb']} GB VRAM)")
     print(f"Atenção Configurada:      {args.attn_implementation} (TF32 Matmul: Ativo)")
     print(f"Batch Size Efetivo:       {args.per_device_train_batch_size} x {args.gradient_accumulation_steps} = {args.per_device_train_batch_size * args.gradient_accumulation_steps}")
+    print(f"Modelo / Checkpoint:      {args.model_name_or_path}")
     print(f"Suíte de Problemas:       {args.problem_file}")
     print(f"Iterações STaR:           {args.star_iterations}")
     print(f"Candidatos por Problema:  {args.num_candidates} (N={args.num_candidates})")
@@ -983,7 +1135,7 @@ def main():
     print(f"Total de problemas carregados para exploração: {len(problems)}")
     if not problems:
         print("[Erro] Nenhum problema disponível para o ciclo STaR.")
-        return
+        return None
 
     # 2. Carregar amostras âncora de ouro (se configuradas)
     gold_anchors = load_gold_anchors(args.anchor_file, upsample_factor=args.anchor_upsample)
@@ -998,8 +1150,8 @@ def main():
     )
 
     # Estado iterativo do modelo
-    current_adapter_path = args.initial_adapter
     current_model_path = args.model_name_or_path
+    current_adapter_path = args.initial_adapter
     iteration_history = []
 
     # Se dry_run estiver ativo, força backend mock
@@ -1029,8 +1181,16 @@ def main():
             max_new_tokens=args.max_new_tokens,
         )
 
-        rollouts = generator.generate_rollouts(problems, args.num_candidates)
+        rollouts = generator.generate_candidates(problems, args.num_candidates)
         print(f"Rollouts concluídos: {sum(len(r) for r in rollouts)} trajetórias geradas.")
+
+        # Prevenção Rigorosa de OOM na L4 (24GB):
+        # Descarrega o modelo da memória de vídeo antes de iniciar a verificação e o SFT Trainer
+        generator.unload()
+        del generator
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         # ----------------------------------------------------------------------
         # Passo 2: Verificação Determinística e Rejection Sampling
@@ -1085,16 +1245,17 @@ def main():
         # ----------------------------------------------------------------------
         print(f"\n[4/4] Executando Atualização LoRA SFT da Iteração {iter_idx}...")
         iter_checkpoint_dir = os.path.join(args.output_dir, f"checkpoint-iter-{iter_idx}")
-        updated_adapter_dir = execute_sft_iteration(
+        updated_adapter_dir = run_sft_update(
             iteration=iter_idx,
             train_file=iter_corpus_file,
             output_checkpoint_dir=iter_checkpoint_dir,
             args=args,
-            base_model_path=args.model_name_or_path,
-            adapter_path_prev=current_adapter_path,
+            model_path=current_model_path,
+            adapter_path_prev=current_adapter_path if iter_idx == 1 else None,
         )
 
         # O modelo atualizado torna-se o gerador de rollouts da próxima iteração
+        current_model_path = updated_adapter_dir
         current_adapter_path = updated_adapter_dir
         iteration_history.append(telemetry)
 
@@ -1118,6 +1279,13 @@ def main():
     print(f"Checkpoint Final STaR:        {current_adapter_path}")
     print(f"Resumo Consolidado Salvo em:  {summary_file}")
     print("=" * 75)
+
+    return current_adapter_path
+
+
+def main():
+    args = parse_args()
+    run_star_pipeline(args)
 
 
 if __name__ == "__main__":

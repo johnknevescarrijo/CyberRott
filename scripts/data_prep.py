@@ -472,8 +472,13 @@ def deduplicate_samples(
 def load_anchor_samples(anchor_file: str) -> List[Dict[str, Any]]:
     """Carrega as amostras âncora no formato padronizado ChatML marcando _is_anchor=True."""
     if not os.path.exists(anchor_file):
-        print(f"[Aviso] Arquivo âncora '{anchor_file}' não encontrado.")
-        return []
+        fallback = os.path.join("data", anchor_file)
+        if os.path.exists(fallback):
+            print(f"[*] Fallback de âncora: '{anchor_file}' -> '{fallback}'")
+            anchor_file = fallback
+        else:
+            print(f"[Aviso] Arquivo âncora '{anchor_file}' não encontrado.")
+            return []
 
     samples = []
     with open(anchor_file, "r", encoding="utf-8") as f:
@@ -696,10 +701,10 @@ def print_dataset_catalog():
     print(header + "\n")
 
 # =============================================================================
-# 10. PIPELINE PRINCIPAL DE FUSÃO
+# 10. PIPELINE PRINCIPAL DE PREPARAÇÃO E FUSÃO (prepare_dataset)
 # =============================================================================
 
-def run_fusion_pipeline(
+def prepare_dataset(
     anchor_file: str = "dataset_cyber_ready.jsonl",
     anchor_repeat: int = 20,
     preset: str = "v1.0",
@@ -710,15 +715,23 @@ def run_fusion_pipeline(
     enforce_think: bool = True,
     output_file: str = "cyberrott_final_train.jsonl",
     seed: int = 42
-):
+) -> List[Dict[str, Any]]:
     """
-    Executa o pipeline unificado de preparação:
-    - Anchor Mixing com upsampling de exemplos de ouro.
-    - Streaming do Hugging Face (modo v1.0 clássico ou v1.1 multi-dataset expandido).
-    - Scrubber de recusas e disclaimers.
-    - Enforcing de tags <think> CoT.
-    - Desduplicação por hash SHA-256 e shuffling determinístico.
+    Função principal de preparação e fusão de dados do CyberRott:
+    - Fallback inteligente se anchor_file não existir diretamente (ex: busca em 'data/').
+    - Ingestão do catálogo aberto v1.1 (~10.5k amostras CoT) ou streaming v1.0.
+    - Scrubber de recusas e remoção de disclaimers moralistas.
+    - Normalização de tags CoT para <think>...</think>.
+    - Desduplicação determinística com preservação de âncoras de ouro.
+    - Criação garantida do diretório de destino e exportação JSONL.
     """
+    # Fallback automático se anchor_file não existir no caminho especificado
+    if not os.path.exists(anchor_file):
+        fallback_candidate = os.path.join("data", anchor_file)
+        if os.path.exists(fallback_candidate):
+            print(f"[*] Fallback de âncora aplicado em prepare_dataset: '{anchor_file}' -> '{fallback_candidate}'")
+            anchor_file = fallback_candidate
+
     print("=" * 75)
     print(f"🛡️  CyberRott Pipeline de Fusão de Dados de Treinamento (Preset: {preset.upper()})")
     print("=" * 75)
@@ -768,7 +781,7 @@ def run_fusion_pipeline(
     combined = anchor_samples + hf_samples
     if not combined:
         print("[Erro Crítico] Nenhuma amostra disponível para compor o dataset de treinamento!")
-        return
+        return []
 
     deduped_samples = deduplicate_samples(combined, preserve_anchors=True)
 
@@ -776,7 +789,7 @@ def run_fusion_pipeline(
     random.seed(seed)
     random.shuffle(deduped_samples)
 
-    # 5. Gravação em Disco
+    # 5. Gravação em Disco (garantindo diretório pai)
     output_dir = os.path.dirname(os.path.abspath(output_file))
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
@@ -797,6 +810,13 @@ def run_fusion_pipeline(
     print(f"• TOTAL FINAL DESDUPLICADO E EMBARALHADO:   {len(deduped_samples)}")
     print(f"• Arquivo Gerado:                           {output_file}")
     print("=" * 75 + "\n")
+
+    return deduped_samples
+
+
+# Alias para retrocompatibilidade
+run_fusion_pipeline = prepare_dataset
+
 
 # =============================================================================
 # 11. INTERFACE DE LINHA DE COMANDO (CLI)
@@ -827,29 +847,34 @@ if __name__ == "__main__":
 
     # Parâmetros Legados e de Configuração
     parser.add_argument(
-        "--anchor_file",
+        "--anchor_file", "--anchor-file",
+        dest="anchor_file",
         default="dataset_cyber_ready.jsonl",
         help="Caminho do arquivo com os 16 exemplos complexos de ouro"
     )
     parser.add_argument(
-        "--anchor_repeat",
+        "--anchor_repeat", "--anchor-repeat",
+        dest="anchor_repeat",
         type=int,
         default=20,
         help="Fator de repetição (upsampling) para as amostras âncora (default: 20 -> 320 amostras)"
     )
     parser.add_argument(
-        "--hf_dataset",
+        "--hf_dataset", "--hf-dataset",
+        dest="hf_dataset",
         default="nvidia/Nemotron-Research-GooseReason-0.7M",
         help="Dataset no Hugging Face para streaming (usado no modo v1.0 ou override)"
     )
     parser.add_argument(
-        "--max_hf_samples",
+        "--max_hf_samples", "--max-hf-samples",
+        dest="max_hf_samples",
         type=int,
         default=2500,
         help="Quantidade máxima de amostras a extrair do Hugging Face no modo v1.0"
     )
     parser.add_argument(
-        "--output",
+        "--output", "--output_file", "--output-file",
+        dest="output",
         default="cyberrott_final_train.jsonl",
         help="Caminho do arquivo JSONL de saída final"
     )
@@ -880,7 +905,7 @@ if __name__ == "__main__":
         print_dataset_catalog()
         sys.exit(0)
 
-    run_fusion_pipeline(
+    prepare_dataset(
         anchor_file=args.anchor_file,
         anchor_repeat=args.anchor_repeat,
         preset=args.preset,
