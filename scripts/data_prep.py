@@ -450,6 +450,7 @@ def deduplicate_samples(
         prompt_hash = hashlib.sha256(normalized_prompt.encode("utf-8")).hexdigest()
 
         if is_anchor and preserve_anchors:
+            seen_prompts.add(prompt_hash)
             clean_item = {k: v for k, v in item.items() if not k.startswith("_")}
             deduped.append(clean_item)
         elif prompt_hash in seen_prompts:
@@ -563,9 +564,13 @@ def fetch_single_dataset_stream(
 
     count = 0
     checked = 0
+    max_checked_items = max_samples * 25
     try:
         for item in ds:
             checked += 1
+            if checked > max_checked_items:
+                print(f"[!] Limite máximo de inspeções ({max_checked_items:,}) atingido para '{dataset_name}'. Finalizando coleta com {count} amostras.")
+                break
 
             # Filtragem de segurança se exigida
             if cyber_regex is not None:
@@ -754,19 +759,74 @@ def prepare_dataset(
     anchor_samples = raw_anchors * anchor_repeat
     print(f"[✓] Âncoras carregadas: {unique_anchor_count} únicas -> {len(anchor_samples)} após upsampling ({anchor_repeat}x).")
 
-    # 2. Ingestão de Datasets do Hugging Face
+    # 2. Reuso Otimizado da Base v1.0 Local (GooseReason pré-existente)
+    local_base_samples: List[Dict[str, Any]] = []
+    reusing_local_v1 = False
+
+    if preset == "v1.1" and dataset_keys is None and goose_limit is None:
+        candidate_base = None
+        if os.path.exists(output_file):
+            candidate_base = output_file
+        elif output_file in ["cyberrott_final_train.jsonl", "data/cyberrott_final_train.jsonl"]:
+            for cand in ["data/cyberrott_final_train.jsonl", "cyberrott_final_train.jsonl"]:
+                if os.path.exists(cand):
+                    candidate_base = cand
+                    break
+
+        if candidate_base and os.path.exists(candidate_base):
+            temp_samples = []
+            try:
+                with open(candidate_base, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            temp_samples.append(json.loads(line))
+                        except Exception:
+                            continue
+            except Exception as e:
+                print(f"[Aviso] Falha ao inspecionar base v1.0 local '{candidate_base}': {e}")
+                temp_samples = []
+
+            if len(temp_samples) >= 2000:
+                reusing_local_v1 = True
+                print(
+                    f"[✓] Base v1.0 detectada localmente ({len(temp_samples)} amostras)! "
+                    f"Reutilizando GooseReason local e baixando apenas os 4 novos datasets da v1.1..."
+                )
+                for item in temp_samples:
+                    if scrub_refusals:
+                        scrubbed = scrub_refusal_and_boilerplate(item)
+                        if not scrubbed:
+                            continue
+                        item = scrubbed
+                    if enforce_think:
+                        msgs = item.get("messages", [])
+                        for m in msgs:
+                            if m.get("role") == "assistant":
+                                m["content"] = format_to_cyberrott_cot(m.get("content", ""), enforce_think=True)
+                    local_base_samples.append(item)
+
+    # 3. Ingestão de Datasets do Hugging Face
     cyber_regex = compile_cyber_regex(CYBER_KEYWORDS)
     hf_samples = []
 
     if preset == "v1.1":
         active_keys = dataset_keys or list(CYBERROTT_V1_1_DATASETS.keys())
-        print(f"[*] Modo v1.1 Ativado: Processando {len(active_keys)} datasets do catálogo...")
-        hf_samples = fetch_multi_hf_datasets(
-            dataset_keys=active_keys,
-            cyber_regex=cyber_regex,
-            scrub_refusals=scrub_refusals,
-            enforce_think=enforce_think
-        )
+        if reusing_local_v1:
+            active_keys = [k for k in active_keys if k != "goose_reason"]
+            print(f"[*] Reuso local ativo: GooseReason omitido do download. Datasets remanescentes: {active_keys}")
+        else:
+            print(f"[*] Modo v1.1 Ativado: Processando {len(active_keys)} datasets do catálogo...")
+
+        if active_keys:
+            hf_samples = fetch_multi_hf_datasets(
+                dataset_keys=active_keys,
+                cyber_regex=cyber_regex,
+                scrub_refusals=scrub_refusals,
+                enforce_think=enforce_think
+            )
     else:
         # Modo clássico v1.0 (retrocompatibilidade)
         target_repo = hf_dataset or "nvidia/Nemotron-Research-GooseReason-0.7M"
@@ -784,19 +844,19 @@ def prepare_dataset(
             except Exception as e:
                 print(f"[Aviso] Falha de conexão ou erro no Hugging Face: {e}")
 
-    # 3. Combinar e Desduplicar
-    combined = anchor_samples + hf_samples
+    # 4. Combinar e Desduplicar
+    combined = anchor_samples + local_base_samples + hf_samples
     if not combined:
         print("[Erro Crítico] Nenhuma amostra disponível para compor o dataset de treinamento!")
         return []
 
     deduped_samples = deduplicate_samples(combined, preserve_anchors=True)
 
-    # 4. Embaralhamento Determinístico
+    # 5. Embaralhamento Determinístico
     random.seed(seed)
     random.shuffle(deduped_samples)
 
-    # 5. Gravação em Disco (garantindo diretório pai)
+    # 6. Gravação em Disco (garantindo diretório pai)
     output_dir = os.path.dirname(os.path.abspath(output_file))
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
@@ -805,7 +865,7 @@ def prepare_dataset(
         for entry in deduped_samples:
             f_out.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
-    # 6. Relatório Final Consolidado
+    # 7. Relatório Final Consolidado
     print("\n" + "=" * 75)
     print("📊 RELATÓRIO CONSOLIDADO DO DATASET DE TREINAMENTO")
     print("=" * 75)
@@ -813,6 +873,8 @@ def prepare_dataset(
     print(f"• Total de Âncoras de Ouro (únicas):        {unique_anchor_count}")
     print(f"• Fator de Upsampling das Âncoras:          {anchor_repeat}x")
     print(f"• Total de Amostras Âncora no Treino:       {len(anchor_samples)}")
+    if reusing_local_v1:
+        print(f"• Amostras Base v1.0 Reutilizadas (Local):  {len(local_base_samples)}")
     print(f"• Total de Amostras Hugging Face Coletadas: {len(hf_samples)}")
     print(f"• TOTAL FINAL DESDUPLICADO E EMBARALHADO:   {len(deduped_samples)}")
     print(f"• Arquivo Gerado:                           {output_file}")

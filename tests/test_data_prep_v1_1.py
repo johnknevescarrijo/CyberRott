@@ -11,6 +11,10 @@ import json
 import subprocess
 import pytest
 
+import tempfile
+import shutil
+from unittest.mock import patch, MagicMock
+
 # Adiciona o diretório raiz ao PYTHONPATH
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -26,6 +30,8 @@ from scripts.data_prep import (
     extract_qa_from_hf_item,
     deduplicate_samples,
     load_anchor_samples,
+    prepare_dataset,
+    fetch_single_dataset_stream,
 )
 
 
@@ -291,4 +297,76 @@ class TestCommandLineInterface:
         )
         assert "500" in res.stdout
         assert "TOTAL ALVO EXTERNO: ~3,200" in res.stdout
+
+
+class TestLocalV1ReuseAndSafetyGuards:
+    """Valida o reuso da base v1.0 local e os limites de segurança contra loops de streaming."""
+
+    def test_local_v1_reuse_skips_goose_reason(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            base_file = os.path.join(temp_dir, "cyberrott_final_train.jsonl")
+            # Criar base v1.0 com 2005 amostras simuladas
+            with open(base_file, "w", encoding="utf-8") as f:
+                for i in range(2005):
+                    item = {
+                        "messages": [
+                            {"role": "user", "content": f"Pergunta local {i}"},
+                            {"role": "assistant", "content": f"<think>\nRaciocínio {i}\n</think>\n\nResposta {i}"}
+                        ]
+                    }
+                    f.write(json.dumps(item) + "\n")
+
+            mock_new_samples = [
+                {
+                    "messages": [
+                        {"role": "user", "content": "Nova pergunta externa v1.1"},
+                        {"role": "assistant", "content": "<think>\nCoT\n</think>\n\nResposta v1.1"}
+                    ]
+                }
+            ]
+
+            with patch("scripts.data_prep.fetch_multi_hf_datasets", return_value=mock_new_samples) as mock_fetch:
+                result = prepare_dataset(
+                    anchor_file="data/dataset_cyber_ready.jsonl",
+                    anchor_repeat=1,
+                    preset="v1.1",
+                    output_file=base_file
+                )
+
+                # Verifica que fetch_multi_hf_datasets foi chamado
+                assert mock_fetch.called
+                called_keys = mock_fetch.call_args.kwargs.get("dataset_keys") or mock_fetch.call_args[0][0]
+                # GooseReason NÃO deve estar nos datasets a baixar
+                assert "goose_reason" not in called_keys
+                assert "code_feedback" in called_keys
+                assert "open_r1" in called_keys
+                assert "cyber_native" in called_keys
+                assert "cybersecurity_v1" in called_keys
+
+                # Verifica que as 2005 amostras locais foram preservadas
+                assert len(result) >= 2005
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_safety_guard_max_checked_items(self):
+        # Gerador simulado de dataset via streaming com itens irrelevantes que não batem no regex
+        def infinite_irrelevant_items():
+            idx = 0
+            while True:
+                idx += 1
+                yield {"text": f"non-security harmless text item {idx}"}
+
+        # Mock do split retornado pelo load_dataset
+        with patch("datasets.load_dataset", return_value=infinite_irrelevant_items()):
+            regex = compile_cyber_regex(["cybersecurity", "exploit"])
+            # max_samples = 10 -> limite = 10 * 25 = 250 itens
+            collected = fetch_single_dataset_stream(
+                dataset_name="mock_stream",
+                max_samples=10,
+                cyber_regex=regex
+            )
+            # Como nenhum item bate no regex, encerra com 0 amostras ao bater no teto de 250 inspeções
+            assert len(collected) == 0
+
 
