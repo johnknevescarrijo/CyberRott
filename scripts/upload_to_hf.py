@@ -42,14 +42,21 @@ def upload_model(
     create_repo(repo_id=full_repo_id, repo_type="model", exist_ok=True, token=token)
     print("   [✓] Repositório pronto!")
 
-    # 3. Preparar MODEL_CARD.md como README.md no diretório standalone
+    # 3. Preparar diretório de upload e MODEL_CARD.md como README.md oficial
+    os.makedirs(standalone_folder, exist_ok=True)
     dest_readme = os.path.join(standalone_folder, "README.md")
     if os.path.exists(model_card):
-        if os.path.exists(standalone_folder):
-            shutil.copy(model_card, dest_readme)
-            print(f"   [✓] MODEL_CARD.md copiado como README.md oficial em {dest_readme}")
-        else:
-            dest_readme = model_card
+        shutil.copy(model_card, dest_readme)
+        print(f"   [✓] MODEL_CARD.md copiado como README.md oficial em {dest_readme}")
+    else:
+        dest_readme = model_card
+
+    # Copiar Modelfile se existir
+    for mf_candidate in ["./Modelfile_v1.2", "./Modelfile"]:
+        if os.path.exists(mf_candidate):
+            shutil.copy(mf_candidate, os.path.join(standalone_folder, "Modelfile"))
+            print(f"   [✓] {mf_candidate} copiado para o repositório como Modelfile.")
+            break
 
     # Se for apenas o README, envia em segundos usando api.upload_file
     if readme_only:
@@ -71,13 +78,13 @@ def upload_model(
     # 4. Incluir GGUF no diretório para quem usa Ollama/llama.cpp
     if gguf_file and os.path.exists(gguf_file):
         dest_gguf = os.path.join(standalone_folder, os.path.basename(gguf_file))
-        if not os.path.exists(dest_gguf):
+        if not os.path.exists(dest_gguf) and os.path.abspath(gguf_file) != os.path.abspath(dest_gguf):
             print(f"2. Vinculando arquivo GGUF ({gguf_file}) ao repositório...")
             try:
                 os.link(gguf_file, dest_gguf) # Hard link economiza espaço em disco
             except Exception:
                 shutil.copy(gguf_file, dest_gguf)
-        print("   [✓] Arquivo GGUF pronto para upload.")
+        print(f"   [✓] Arquivo GGUF pronto para upload ({os.path.basename(dest_gguf)}).")
 
     # 5. Fazer upload da pasta inteira com progresso e retry automático
     print("\n3. Iniciando upload dos pesos (safetensors + GGUF + configs)...")

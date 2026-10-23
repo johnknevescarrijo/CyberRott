@@ -21,6 +21,10 @@ env/
 # Pastas de adaptadores LoRA e Standalone (grandes para o Git padrão)
 CyberRott-Phi4-LoRA/
 CyberRott-Phi4-mini-Standalone/
+CyberRott-v1.2-GRPO/
+CyberRott-v1.2-Standalone/
+CyberRott-*-Export/
+CyberRott-*-HF-Upload/
 checkpoint-*/
 runs/
 wandb/
