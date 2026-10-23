@@ -29,25 +29,141 @@ from typing import List, Dict, Any, Optional, Tuple, Union
 # -----------------------------------------------------------------------------
 # Compatibilidade Crítica: Proteção contra divergência de tipos transformers x trl
 # -----------------------------------------------------------------------------
-try:
-    import trl.import_utils
-    for _attr in dir(trl.import_utils):
-        if _attr.startswith('_') and _attr.endswith('_available'):
-            _val = getattr(trl.import_utils, _attr)
-            if isinstance(_val, tuple):
-                setattr(trl.import_utils, _attr, bool(_val[0]))
-        elif _attr.startswith('is_') and _attr.endswith('_available'):
-            _fn = getattr(trl.import_utils, _attr)
-            if callable(_fn):
+def apply_grpo_compatibility_patches() -> bool:
+    """Aplica patches de compatibilidade essenciais entre transformers (>= 4.48 / 5.x) e TRL GRPOTrainer.
+
+    1. Corrige trl.import_utils onde verificações de disponibilidade retornam tuplas
+       (ex: em transformers >= 4.48 / 5.x) que o Python avalia como Truthy, causando importações indevidas (ex: vLLM).
+    2. Garante o atributo warnings_issued em PreTrainedModel e GRPOTrainer.__init__ para evitar AttributeError.
+    3. Patch crítico na assinatura de GRPOTrainer._get_train_sampler:
+       Em transformers >= 4.48, Trainer._get_dataloader invoca self._get_train_sampler(dataset),
+       repassando o dataset como argumento posicional. Em versões do TRL (ex: 0.15.x / 0.16.x),
+       GRPOTrainer._get_train_sampler(self) foi definido sem o parâmetro train_dataset, causando:
+       `TypeError: GRPOTrainer._get_train_sampler() takes 1 positional argument but 2 were given`.
+    4. Patch em GRPOTrainer._get_eval_sampler para garantir tolerância a argumentos variáveis/opcionais.
+    """
+    patched_any = False
+
+    # 1. Correção de tuplas em trl.import_utils
+    try:
+        import trl.import_utils
+        for _attr in dir(trl.import_utils):
+            if _attr.startswith("_") and _attr.endswith("_available"):
+                _val = getattr(trl.import_utils, _attr)
+                if isinstance(_val, tuple):
+                    setattr(trl.import_utils, _attr, bool(_val[0]))
+                    patched_any = True
+            elif _attr.startswith("is_") and _attr.endswith("_available"):
+                _fn = getattr(trl.import_utils, _attr)
+                if callable(_fn):
+                    try:
+                        _val = _fn()
+                        if isinstance(_val, tuple):
+                            _bool_val = bool(_val[0])
+                            setattr(trl.import_utils, _attr, (lambda b=_bool_val: b))
+                            patched_any = True
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+    # 2. Assegurar warnings_issued em PreTrainedModel
+    try:
+        from transformers import PreTrainedModel
+        if not hasattr(PreTrainedModel, "warnings_issued"):
+            PreTrainedModel.warnings_issued = {}
+            patched_any = True
+    except Exception:
+        pass
+
+    # 3. Patch em GRPOTrainer.__init__, _get_train_sampler e _get_eval_sampler
+    try:
+        from trl.trainer.grpo_trainer import GRPOTrainer, RepeatRandomSampler
+
+        # Hook em GRPOTrainer.__init__ para garantir warnings_issued no modelo
+        if not getattr(GRPOTrainer.__init__, "_is_patched", False):
+            _orig_grpo_init = GRPOTrainer.__init__
+
+            def _patched_grpo_init(self, *args, **kwargs):
+                model = kwargs.get("model", args[0] if len(args) > 0 else None)
+                if model is not None and not hasattr(model, "warnings_issued"):
+                    try:
+                        model.warnings_issued = {}
+                    except Exception:
+                        pass
+                return _orig_grpo_init(self, *args, **kwargs)
+
+            _patched_grpo_init._is_patched = True
+            GRPOTrainer.__init__ = _patched_grpo_init
+            patched_any = True
+
+        # Hook em GRPOTrainer._get_train_sampler
+        if not getattr(GRPOTrainer._get_train_sampler, "_is_patched", False):
+            _orig_get_train_sampler = GRPOTrainer._get_train_sampler
+
+            def _patched_get_train_sampler(self, train_dataset=None, *args, **kwargs):
+                """Sampler compatível com Trainer._get_dataloader (transformers >= 4.48)."""
+                dataset = train_dataset if train_dataset is not None else getattr(self, "train_dataset", None)
+                if dataset is None:
+                    return None
                 try:
-                    _val = _fn()
-                    if isinstance(_val, tuple):
-                        _bool_val = bool(_val[0])
-                        setattr(trl.import_utils, _attr, (lambda b=_bool_val: b))
+                    effective_batch_size = (
+                        self.args.per_device_train_batch_size
+                        * self.accelerator.num_processes
+                        * self.args.gradient_accumulation_steps
+                    )
+                    return RepeatRandomSampler(
+                        data_source=dataset,
+                        mini_repeat_count=self.num_generations,
+                        batch_size=effective_batch_size // self.num_generations,
+                        repeat_count=self.num_iterations,
+                        seed=self.args.seed,
+                    )
                 except Exception:
-                    pass
-except Exception:
-    pass
+                    if train_dataset is not None and getattr(self, "train_dataset", None) is None:
+                        self.train_dataset = train_dataset
+                    try:
+                        return _orig_get_train_sampler(self, train_dataset, *args, **kwargs)
+                    except TypeError:
+                        return _orig_get_train_sampler(self)
+
+            _patched_get_train_sampler._is_patched = True
+            GRPOTrainer._get_train_sampler = _patched_get_train_sampler
+            patched_any = True
+
+        # Hook em GRPOTrainer._get_eval_sampler
+        if hasattr(GRPOTrainer, "_get_eval_sampler") and not getattr(GRPOTrainer._get_eval_sampler, "_is_patched", False):
+            _orig_get_eval_sampler = GRPOTrainer._get_eval_sampler
+
+            def _patched_get_eval_sampler(self, eval_dataset=None, *args, **kwargs):
+                """Sampler de avaliação tolerante a eval_dataset opcional."""
+                dataset = eval_dataset if eval_dataset is not None else getattr(self, "eval_dataset", None)
+                if dataset is None:
+                    return None
+                try:
+                    return RepeatRandomSampler(
+                        data_source=dataset,
+                        mini_repeat_count=self.num_generations,
+                        seed=self.args.seed,
+                    )
+                except Exception:
+                    try:
+                        return _orig_get_eval_sampler(self, dataset, *args, **kwargs)
+                    except TypeError:
+                        return _orig_get_eval_sampler(self)
+
+            _patched_get_eval_sampler._is_patched = True
+            GRPOTrainer._get_eval_sampler = _patched_get_eval_sampler
+            patched_any = True
+
+    except Exception:
+        pass
+
+    return patched_any
+
+
+# Aplicação imediata dos patches durante a carga do módulo
+apply_grpo_compatibility_patches()
 
 import torch
 
@@ -904,6 +1020,10 @@ def main():
         technical_accuracy_reward,
         sandbox_code_reward,
     ]
+
+    apply_grpo_compatibility_patches()
+    if not hasattr(base_model, "warnings_issued"):
+        base_model.warnings_issued = {}
 
     print("[*] Inicializando GRPOTrainer com a suíte de 3 recompensas verificáveis...")
     trainer = GRPOTrainer(

@@ -17,6 +17,7 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+import inspect
 from scripts.train_grpo import (
     cot_integrity_reward,
     technical_accuracy_reward,
@@ -25,6 +26,7 @@ from scripts.train_grpo import (
     parse_and_curate_dataset,
     run_dry_run_validation,
     parse_args,
+    apply_grpo_compatibility_patches,
 )
 
 
@@ -247,4 +249,95 @@ class TestGRPOArgsAndAutoAdjustment:
                 args.per_device_train_batch_size = args.num_generations
 
             assert args.per_device_train_batch_size == expected
+
+
+class TestGRPOTrainerCompatibility:
+    """Valida a compatibilidade de GRPOTrainer com transformers >= 4.48 / 5.x."""
+
+    def test_grpo_trainer_sampler_signature_patched(self):
+        """Garante que _get_train_sampler aceita 'train_dataset' evitando TypeError no Trainer._get_dataloader."""
+        from trl.trainer.grpo_trainer import GRPOTrainer
+
+        # Certifica-se de que o patch foi executado
+        apply_grpo_compatibility_patches()
+
+        sig_train = inspect.signature(GRPOTrainer._get_train_sampler)
+        assert "train_dataset" in sig_train.parameters, (
+            f"_get_train_sampler deve aceitar 'train_dataset', parâmetros atuais: {list(sig_train.parameters.keys())}"
+        )
+
+        sig_eval = inspect.signature(GRPOTrainer._get_eval_sampler)
+        assert "eval_dataset" in sig_eval.parameters, (
+            f"_get_eval_sampler deve aceitar 'eval_dataset', parâmetros atuais: {list(sig_eval.parameters.keys())}"
+        )
+
+    def test_grpo_trainer_dataloader_and_train_step_cpu(self, tmp_path):
+        """Instancia GRPOTrainer, obtém get_train_dataloader e executa 1 step em CPU com tiny model."""
+        import torch
+        from datasets import Dataset
+        from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+        from trl import GRPOConfig, GRPOTrainer
+
+        apply_grpo_compatibility_patches()
+
+        tokenizer = AutoTokenizer.from_pretrained("gpt2")
+        tokenizer.pad_token = tokenizer.eos_token
+
+        config = AutoConfig.for_model(
+            "gpt2",
+            n_layer=2,
+            n_head=2,
+            n_embd=64,
+            vocab_size=len(tokenizer),
+        )
+        model = AutoModelForCausalLM.from_config(config)
+
+        dataset = Dataset.from_dict({
+            "prompt": [
+                "Identifique a vulnerabilidade técnica na função vulnerable_auth().",
+                "Analise o vetor de ataque no endpoint /api/v1/user.",
+            ]
+        })
+
+        def dummy_accuracy_reward(prompts, completions, **kwargs):
+            return [1.0] * len(prompts)
+
+        out_dir = str(tmp_path / "grpo_test_run")
+        training_args = GRPOConfig(
+            output_dir=out_dir,
+            learning_rate=1e-4,
+            max_steps=1,
+            per_device_train_batch_size=2,
+            gradient_accumulation_steps=1,
+            num_generations=2,
+            max_prompt_length=32,
+            max_completion_length=16,
+            report_to=[],
+            use_vllm=False,
+        )
+
+        trainer = GRPOTrainer(
+            model=model,
+            reward_funcs=[dummy_accuracy_reward],
+            args=training_args,
+            train_dataset=dataset,
+            eval_dataset=dataset,
+            processing_class=tokenizer,
+        )
+
+        # 1. Valida que get_train_dataloader() executa sem TypeError
+        train_dataloader = trainer.get_train_dataloader()
+        assert train_dataloader is not None
+        assert len(train_dataloader) > 0
+
+        # 2. Valida que get_eval_dataloader() executa sem erro
+        eval_dataloader = trainer.get_eval_dataloader()
+        assert eval_dataloader is not None
+
+        # 3. Executa 1 step real de treinamento em CPU
+        train_result = trainer.train()
+        assert train_result is not None
+        assert train_result.global_step == 1
+        assert "train_loss" in train_result.metrics
+
 
