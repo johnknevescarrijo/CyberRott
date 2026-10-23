@@ -1311,12 +1311,22 @@ def main():
 
     sig_params = inspect.signature(GRPOConfig.__init__).parameters
     if "use_vllm" in sig_params:
+        if use_vllm and "vllm_server_port" in sig_params and "vllm_device" not in sig_params and "vllm_mode" not in sig_params:
+            import socket
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(1.0)
+                if s.connect_ex(("127.0.0.1", 8000)) != 0:
+                    print("[*] TRL 0.16+ exige servidor vLLM externo em 127.0.0.1:8000 (não detectado). Usando geração acelerada nativa na A100.")
+                    use_vllm = False
         grpo_config_kwargs["use_vllm"] = use_vllm
         if use_vllm:
+            if "vllm_mode" in sig_params:
+                grpo_config_kwargs["vllm_mode"] = "colocate"
             if "vllm_gpu_memory_utilization" in sig_params:
                 grpo_config_kwargs["vllm_gpu_memory_utilization"] = args.vllm_gpu_memory_utilization
-            if "vllm_device" in sig_params and args.vllm_device != "auto":
-                grpo_config_kwargs["vllm_device"] = args.vllm_device
+            if "vllm_device" in sig_params:
+                vllm_dev = "cuda:0" if (args.vllm_device == "auto" and torch.cuda.device_count() <= 1) else args.vllm_device
+                grpo_config_kwargs["vllm_device"] = vllm_dev
 
     grpo_config = GRPOConfig(**grpo_config_kwargs)
 
