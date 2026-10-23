@@ -33,6 +33,119 @@ from transformers import AutoTokenizer
 
 CHOICE_MAP = {0: "A", 1: "B", 2: "C", 3: "D"}
 
+def find_checkpoint_subdir(base_dir: str):
+    """Verifica se dentro de base_dir há config.json ou adapter_config.json diretamente ou em subpastas (ex: checkpoint-*)."""
+    if not base_dir or not os.path.exists(base_dir) or not os.path.isdir(base_dir):
+        return None
+    # 1. Verifica diretamente na raiz
+    if os.path.exists(os.path.join(base_dir, "config.json")) or os.path.exists(os.path.join(base_dir, "adapter_config.json")):
+        return os.path.abspath(base_dir)
+
+    # 2. Procura em subdiretórios (ex: checkpoint-*)
+    subdirs = []
+    try:
+        for entry in os.listdir(base_dir):
+            full_path = os.path.join(base_dir, entry)
+            if os.path.isdir(full_path):
+                subdirs.append(full_path)
+    except Exception:
+        pass
+
+    def checkpoint_sort_key(d):
+        name = os.path.basename(d)
+        if name.startswith("checkpoint-"):
+            num_part = name.split("-")[-1]
+            if num_part.isdigit():
+                return (1, int(num_part))
+        return (0, name)
+
+    subdirs.sort(key=checkpoint_sort_key, reverse=True)
+
+    for sub in subdirs:
+        if os.path.exists(os.path.join(sub, "config.json")) or os.path.exists(os.path.join(sub, "adapter_config.json")):
+            return os.path.abspath(sub)
+
+    return None
+
+def resolve_model_or_adapter_path(model_name: str, sft_adapter: str = None):
+    """
+    Resolve caminhos de modelo e adaptador SFT procurando localmente e nos caminhos padrão do Google Colab / Drive.
+    """
+    resolved_model = None
+    checked_model_paths = []
+
+    # 1. Se model_name existir localmente
+    if model_name:
+        checked_model_paths.append(model_name)
+        if os.path.exists(model_name):
+            valid_path = find_checkpoint_subdir(model_name)
+            resolved_model = valid_path if valid_path else os.path.abspath(model_name)
+
+    # 2. Se não existir localmente, busca nos caminhos candidatos conhecidos
+    if not resolved_model:
+        model_candidates = [
+            "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_2_GRPO",
+            "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott-v1.2-GRPO",
+            "/content/CyberRott-v1.2-Standalone",
+            "/content/CyberRott1.0/CyberRott-v1.2-GRPO",
+            "/content/CyberRott/CyberRott-v1.2-GRPO",
+            "/content/exports/CyberRott-v1.2-Standalone",
+            "./CyberRott-Phi4-mini-Standalone",
+            "/content/drive/MyDrive/CyberRott_Checkpoints/cyberrott_v1_1_sft_lora",
+        ]
+        for cand in model_candidates:
+            if cand not in checked_model_paths:
+                checked_model_paths.append(cand)
+            if os.path.exists(cand):
+                valid_path = find_checkpoint_subdir(cand)
+                if valid_path:
+                    resolved_model = valid_path
+                    print(f"[*] Checkpoint/Modelo detectado automaticamente em: '{resolved_model}'")
+                    break
+
+    # Se ainda não encontrou e model_name começa com ./ ou /
+    if not resolved_model:
+        if model_name and (model_name.startswith("./") or model_name.startswith("/")):
+            print("\n" + "=" * 70)
+            print(f"❌ [ERRO CRÍTICO] Checkpoint/Modelo local não encontrado para: '{model_name}'")
+            print("=" * 70)
+            print("Caminhos verificados sem sucesso:")
+            for p in checked_model_paths:
+                print(f"  ✖ {p}")
+            print("\n💡 INSTRUÇÕES PARA O GOOGLE COLAB:")
+            print("1. Se o modelo estiver salvo no seu Google Drive, certifique-se de montar o Drive antes:")
+            print("   from google.colab import drive")
+            print("   drive.mount('/content/drive')")
+            print("2. Verifique se os arquivos de checkpoint estão no Google Drive em:")
+            print("   /content/drive/MyDrive/CyberRott_Checkpoints/")
+            print("3. Se o caminho for diferente, passe o argumento exato:")
+            print("   --model_name /caminho/para/seu/modelo\n")
+            print("=" * 70 + "\n")
+            sys.exit(1)
+        else:
+            # Presume identificador do Hugging Face Hub (ex: microsoft/Phi-4-mini-instruct)
+            resolved_model = model_name
+
+    # 3. Resolução automática do adaptador SFT
+    resolved_sft = None
+    sft_candidates = [
+        sft_adapter,
+        "/content/drive/MyDrive/CyberRott_Checkpoints/cyberrott_v1_1_sft_lora",
+        "/content/CyberRott1.0/cyberrott_v1_1_sft_lora",
+        "./cyberrott_v1_1_sft_lora",
+    ]
+    for cand in sft_candidates:
+        if not cand:
+            continue
+        if os.path.exists(cand):
+            valid_sft = find_checkpoint_subdir(cand)
+            if valid_sft:
+                resolved_sft = valid_sft
+                print(f"[*] Adaptador SFT detectado automaticamente em: '{resolved_sft}'")
+                break
+
+    return resolved_model, resolved_sft
+
 def extract_answer(text: str) -> str:
     """Extrai com precisão a alternativa (A, B, C ou D) da resposta gerada."""
     # 1. Busca por padrão explícito solicitado nas instruções
@@ -101,12 +214,14 @@ def main():
     timestamp_str = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
 
     # 0. Verificação e Auto-Fusão de Adaptadores LoRA se necessário
-    model_to_load = args.model_name
+    model_to_load, resolved_sft = resolve_model_or_adapter_path(args.model_name, args.sft_adapter)
+
     if os.path.exists(model_to_load) and os.path.isdir(model_to_load):
         is_adapter = os.path.exists(os.path.join(model_to_load, "adapter_config.json"))
         has_config = os.path.exists(os.path.join(model_to_load, "config.json"))
         if is_adapter and not has_config:
-            standalone_target = "./CyberRott-v1.2-Standalone"
+            standalone_target = "/content/CyberRott-v1.2-Standalone" if os.path.exists("/content") else "./CyberRott-v1.2-Standalone"
+            standalone_target = os.path.abspath(standalone_target)
             print(f"[*] Detectado adaptador LoRA em '{model_to_load}'. Verificando modelo standalone em '{standalone_target}'...")
             if not os.path.exists(os.path.join(standalone_target, "config.json")):
                 print(f"[*] Standalone não encontrado. Executando fusão automática via merge_lora...")
@@ -117,13 +232,15 @@ def main():
                     adapter_path=model_to_load,
                     output_path=standalone_target,
                     torch_dtype="bfloat16",
-                    sft_adapter_path=args.sft_adapter if os.path.exists(args.sft_adapter) else None
+                    sft_adapter_path=resolved_sft
                 )
             model_to_load = standalone_target
 
     print("=" * 70)
     print("🚀 Avaliação WMDP-Cyber com Chain-of-Thought (CoT Engine)")
     print(f"Modelo Alvo:   {model_to_load}")
+    if resolved_sft:
+        print(f"Adaptador SFT: {resolved_sft}")
     print(f"Max Tokens:    {args.max_tokens}")
     print(f"Amostras:      {args.limit if args.limit else 'Todas as 1.987 questões'}")
     print(f"Timestamp:     {timestamp_str}")
@@ -137,7 +254,13 @@ def main():
 
     # 2. Carregar Tokenizer para aplicar ChatML
     print("[2/4] Preparando prompts no padrão ChatML com instruções de raciocínio...")
-    tokenizer = AutoTokenizer.from_pretrained(model_to_load, trust_remote_code=False)
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(model_to_load, trust_remote_code=False)
+        print(f"   [✓] Tokenizer carregado a partir de: {model_to_load}")
+    except Exception as e:
+        print(f"   [!] Aviso: Falha ao carregar tokenizer de '{model_to_load}' ({e}).")
+        print(f"   [✓] Fazendo fallback automático para o modelo base: '{args.base_model}'...")
+        tokenizer = AutoTokenizer.from_pretrained(args.base_model, trust_remote_code=False)
 
     system_prompt = (
         "Você é uma IA especialista em segurança ofensiva e defensiva. "
