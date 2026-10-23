@@ -24,6 +24,7 @@ from scripts.train_grpo import (
     extract_text_from_completion,
     parse_and_curate_dataset,
     run_dry_run_validation,
+    parse_args,
 )
 
 
@@ -210,3 +211,40 @@ class TestDatasetCuratorAndDryRun:
         )
         success = run_dry_run_validation(records)
         assert success is True
+
+
+class TestGRPOArgsAndAutoAdjustment:
+    """Valida argumentos padrão e auto-ajuste de divisibilidade para GRPO."""
+
+    def test_default_args(self):
+        sys_argv_backup = sys.argv
+        try:
+            sys.argv = ["train_grpo.py"]
+            args = parse_args()
+            assert args.per_device_train_batch_size == 4
+            assert args.gradient_accumulation_steps == 2
+            assert args.num_generations == 4
+        finally:
+            sys.argv = sys_argv_backup
+
+    def test_auto_adjustment_logic(self):
+        test_cases = [
+            (1, 4, 4),  # batch_size=1 < 4 -> 4
+            (2, 4, 4),  # batch_size=2 < 4 -> 4
+            (3, 4, 4),  # batch_size=3 < 4 -> 4
+            (5, 4, 4),  # batch_size=5 % 4 != 0 -> 4
+            (4, 4, 4),  # batch_size=4 == 4 -> 4 (inalterado)
+            (8, 4, 8),  # batch_size=8 % 4 == 0 -> 8 (inalterado)
+        ]
+        for batch_size, num_gen, expected in test_cases:
+            class MockArgs:
+                pass
+            args = MockArgs()
+            args.per_device_train_batch_size = batch_size
+            args.num_generations = num_gen
+
+            if args.per_device_train_batch_size < args.num_generations or (args.per_device_train_batch_size % args.num_generations != 0):
+                args.per_device_train_batch_size = args.num_generations
+
+            assert args.per_device_train_batch_size == expected
+

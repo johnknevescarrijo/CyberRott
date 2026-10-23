@@ -617,8 +617,8 @@ python scripts/train_grpo.py \
     --max_completion_length 1024 \
     --learning_rate 5e-6 \
     --beta 0.04 \
-    --per_device_train_batch_size 1 \
-    --gradient_accumulation_steps 8 \
+    --per_device_train_batch_size 4 \
+    --gradient_accumulation_steps 2 \
     --torch_dtype bfloat16
 ```
 

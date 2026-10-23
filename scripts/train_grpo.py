@@ -23,6 +23,7 @@ import time
 import shutil
 import urllib.request
 import argparse
+import inspect
 from typing import List, Dict, Any, Optional, Tuple, Union
 
 # -----------------------------------------------------------------------------
@@ -675,14 +676,14 @@ def parse_args():
     grpo_group.add_argument(
         "--per_device_train_batch_size",
         type=int,
-        default=1,
-        help="Tamanho do micro-batch por dispositivo (padrão: 1 devido ao vocabulário de 200k do Phi-4)."
+        default=4,
+        help="Tamanho do micro-batch por dispositivo (padrão: 4, múltiplo obrigatório de num_generations)."
     )
     grpo_group.add_argument(
         "--gradient_accumulation_steps",
         type=int,
-        default=8,
-        help="Passos de acumulação de gradiente (padrão: 8; batch global efetivo = 8)."
+        default=2,
+        help="Passos de acumulação de gradiente (padrão: 2; batch global efetivo = 8)."
     )
     grpo_group.add_argument(
         "--num_train_epochs", "--epochs",
@@ -846,6 +847,9 @@ def main():
     else:
         print(f"[*] Nenhum adaptador prévio encontrado em '{adapter_path}'. Iniciando GRPO diretamente sobre o modelo base.")
 
+    if hasattr(base_model, "enable_input_require_grads"):
+        base_model.enable_input_require_grads()
+
     # 8. Configuração de novo LoRA para o treinamento da fase GRPO
     print(f"[*] Configurando LoRA limpo para a fase de RL: r={args.lora_r}, alpha={args.lora_alpha}, target=all-linear...")
     lora_config = LoraConfig(
@@ -858,30 +862,41 @@ def main():
     )
 
     # 9. Configuração do GRPOConfig (TRL)
+    if args.per_device_train_batch_size < args.num_generations or (args.per_device_train_batch_size % args.num_generations != 0):
+        print(
+            f"[*] Auto-ajuste TRL GRPO: per_device_train_batch_size ({args.per_device_train_batch_size}) "
+            f"ajustado para {args.num_generations} (múltiplo obrigatório de num_generations={args.num_generations})."
+        )
+        args.per_device_train_batch_size = args.num_generations
+
     print(f"[*] Configurando hiperparâmetros GRPO: lr={args.learning_rate}, beta={args.beta}, G={args.num_generations}...")
-    grpo_config = GRPOConfig(
-        output_dir=args.output_dir,
-        learning_rate=args.learning_rate,
-        beta=args.beta,
-        per_device_train_batch_size=args.per_device_train_batch_size,
-        gradient_accumulation_steps=args.gradient_accumulation_steps,
-        num_generations=args.num_generations,
-        max_prompt_length=args.max_prompt_length,
-        max_completion_length=args.max_completion_length,
-        num_train_epochs=args.num_train_epochs if args.max_steps <= 0 else 1.0,
-        max_steps=args.max_steps,
-        remove_unused_columns=False,
-        logging_steps=args.logging_steps,
-        save_steps=args.save_steps,
-        save_total_limit=args.save_total_limit,
-        warmup_ratio=args.warmup_ratio,
-        seed=args.seed,
-        fp16=(args.torch_dtype == "float16"),
-        bf16=(args.torch_dtype == "bfloat16"),
-        gradient_checkpointing=True,
-        push_to_hub=args.push_to_hub,
-        hub_model_id=args.hub_model_id,
-    )
+    grpo_config_kwargs = {
+        "output_dir": args.output_dir,
+        "learning_rate": args.learning_rate,
+        "beta": args.beta,
+        "per_device_train_batch_size": args.per_device_train_batch_size,
+        "gradient_accumulation_steps": args.gradient_accumulation_steps,
+        "num_generations": args.num_generations,
+        "max_prompt_length": args.max_prompt_length,
+        "max_completion_length": args.max_completion_length,
+        "num_train_epochs": args.num_train_epochs if args.max_steps <= 0 else 1.0,
+        "max_steps": args.max_steps,
+        "remove_unused_columns": False,
+        "logging_steps": args.logging_steps,
+        "save_steps": args.save_steps,
+        "save_total_limit": args.save_total_limit,
+        "warmup_ratio": args.warmup_ratio,
+        "seed": args.seed,
+        "fp16": (args.torch_dtype == "float16"),
+        "bf16": (args.torch_dtype == "bfloat16"),
+        "gradient_checkpointing": True,
+        "push_to_hub": args.push_to_hub,
+        "hub_model_id": args.hub_model_id,
+    }
+    if "gradient_checkpointing_kwargs" in inspect.signature(GRPOConfig.__init__).parameters:
+        grpo_config_kwargs["gradient_checkpointing_kwargs"] = {"use_reentrant": False}
+
+    grpo_config = GRPOConfig(**grpo_config_kwargs)
 
     # 10. Inicialização do GRPOTrainer
     reward_suite = [
