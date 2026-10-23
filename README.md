@@ -313,8 +313,8 @@ CyberRott1.0/
 
 ```bash
 # 1. Clone repository and initialize isolated Python virtual environment
-git clone https://github.com/johnknevescarrijo/CyberRott1.0.git
-cd CyberRott1.0
+git clone https://github.com/johnknevescarrijo/CyberRott.git
+cd CyberRott
 conda create -n cyberrott python=3.10 -y && conda activate cyberrott
 pip install -r requirements.txt
 

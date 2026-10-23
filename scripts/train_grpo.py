@@ -687,7 +687,7 @@ def ensure_dataset_exists(file_path: str, fallback_url: str) -> str:
         if not os.path.exists(file_path):
             tmp_clone = "/tmp/cyberrott_git_clone"
             if not os.path.exists(tmp_clone):
-                os.system(f"git clone --depth 1 https://github.com/johnknevescarrijo/CyberRott1.0.git {tmp_clone}")
+                os.system(f"git clone --depth 1 https://github.com/johnknevescarrijo/CyberRott.git {tmp_clone}")
             repo_file = os.path.join(tmp_clone, file_path)
             if os.path.exists(repo_file):
                 shutil.copyfile(repo_file, file_path)
