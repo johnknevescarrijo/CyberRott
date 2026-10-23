@@ -42,7 +42,7 @@ def setup_hardware_optimizations(args: Optional[argparse.Namespace] = None) -> D
     """
     Detecta e aplica acelerações de hardware de última geração para GPUs modernas (A100, H100, L4):
     - Ativação de TF32 em cuDNN e matmul (acelera até 3x operações de tensores sem perda de precisão)
-    - Auto-sintonia de batch size em GPUs de alta capacidade (A100 40GB/80GB)
+    - Preserva micro-batch em 2 e grad_accum em 8 (devido ao vocabulário de 200k tokens do Phi-4)
     - Detecção e preferência automática por FlashAttention-2
     """
     profile: Dict[str, Any] = {
@@ -76,12 +76,12 @@ def setup_hardware_optimizations(args: Optional[argparse.Namespace] = None) -> D
         profile["recommended_attn"] = "sdpa"
 
     if args is not None and getattr(args, "auto_optimize", True):
-        # Em A100/H100 com >= 35GB VRAM, otimizar throughput de tensores
+        # Em A100/H100 com >= 35GB VRAM, otimizar atenção
         if profile["is_high_vram"]:
-            if args.per_device_train_batch_size == 2 and args.gradient_accumulation_steps == 8:
-                args.per_device_train_batch_size = 4
-                args.gradient_accumulation_steps = 4
-                print(f"[Auto-Otimização A100 ({profile['vram_gb']}GB)] Ajustado batch_size=4, grad_accum=4 (Batch efetivo=16) para saturar os Tensor Cores.")
+            # NOTA: O micro-batch DEVE permanecer em 2 (com gradient_accumulation_steps=8) mesmo em A100 40GB,
+            # pois o vocabulário de 200.064 tokens do Phi-4 gera tensores de logits em FP32 de tamanho
+            # [batch * seq_len * 200064 * 4 bytes]. Um batch=4 com seq_len longo causaria OOM de ~12.2 GiB
+            # na ForCausalLMLoss.
             if args.attn_implementation == "sdpa" and profile["recommended_attn"] == "flash_attention_2":
                 args.attn_implementation = "flash_attention_2"
                 print("[Auto-Otimização A100] Ativado 'flash_attention_2' automaticamente.")
@@ -295,7 +295,7 @@ def parse_args(args_list: Optional[List[str]] = None):
     train_group.add_argument(
         "--max_seq_length",
         type=int,
-        default=4096,
+        default=2048,
         help="Tamanho máximo de sequência para o SFTTrainer."
     )
     train_group.add_argument(

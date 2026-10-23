@@ -162,3 +162,52 @@ class TestColabNotebookIntegrity:
         assert "train_colab.py" in all_text
         assert "train_star.py" in all_text
         assert "STaRVerifier" in all_text or "STaR" in all_text
+
+        # Valida que as células de treino usam max_seq_length 2048 e micro-batch 2
+        assert "--max_seq_length 2048" in all_text
+        assert "--per_device_train_batch_size 2" in all_text
+        assert "--gradient_accumulation_steps 8" in all_text
+
+
+class TestHardwareOptimizationsAndDefaults:
+    """Valida configurações de batch size e seq_len para evitar OOM no vocabulário de 200k tokens."""
+
+    def test_default_max_seq_length_in_train_star(self):
+        args = parse_args([])
+        assert args.max_seq_length == 2048
+        assert args.per_device_train_batch_size == 2
+        assert args.gradient_accumulation_steps == 8
+
+    def test_default_max_seq_length_in_train_colab(self):
+        from scripts.train_colab import parse_args as parse_args_colab
+        # Simula argv vazio
+        sys_argv_backup = sys.argv
+        try:
+            sys.argv = ["train_colab.py"]
+            args = parse_args_colab()
+            assert args.max_seq_length == 2048
+            assert args.per_device_train_batch_size == 2
+            assert args.gradient_accumulation_steps == 8
+        finally:
+            sys.argv = sys_argv_backup
+
+    def test_setup_hardware_optimizations_does_not_increase_batch_size(self):
+        from scripts.train_colab import setup_hardware_optimizations as setup_colab_opt
+        from scripts.train_star import setup_hardware_optimizations as setup_star_opt
+        import argparse
+
+        mock_args = argparse.Namespace(
+            per_device_train_batch_size=2,
+            gradient_accumulation_steps=8,
+            attn_implementation="sdpa",
+            auto_optimize=True,
+        )
+
+        setup_colab_opt(mock_args)
+        assert mock_args.per_device_train_batch_size == 2
+        assert mock_args.gradient_accumulation_steps == 8
+
+        setup_star_opt(mock_args)
+        assert mock_args.per_device_train_batch_size == 2
+        assert mock_args.gradient_accumulation_steps == 8
+
