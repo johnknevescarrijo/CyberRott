@@ -351,7 +351,7 @@ def main():
         formatted = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         prompts.append(formatted)
 
-    # 3. Inicializar Engine de Inferência (vLLM preferencial, Transformers como fallback)
+    # 3. Inicializar Engine de Inferência (vLLM preferencial, llama-cpp-python / Transformers como fallback)
     use_vllm = False
     try:
         from vllm import LLM, SamplingParams
@@ -359,76 +359,129 @@ def main():
     except (ImportError, Exception):
         use_vllm = False
 
+    generated_texts = None
+
     if use_vllm:
-        if model_to_load.endswith(".gguf"):
-            print(f"[3/4] Inicializando vLLM Engine com dtype float16 para GGUF ({model_to_load})...")
-            llm = LLM(
-                model=model_to_load,
-                tokenizer=tokenizer_source,
-                hf_config_path=tokenizer_source,
-                trust_remote_code=False,
-                dtype="float16",
-                max_model_len=4096,
-                gpu_memory_utilization=0.90
-            )
-        else:
-            print(f"[3/4] Inicializando vLLM Engine com bfloat16 na GPU...")
-            llm = LLM(
-                model=model_to_load,
-                tokenizer=tokenizer_source,
-                trust_remote_code=False,
-                dtype="bfloat16",
-                max_model_len=4096,
-                gpu_memory_utilization=0.90
-            )
-
-        sampling_params = SamplingParams(
-            temperature=0.0,         # Greedy decoding para máxima reprodutibilidade lógica
-            max_tokens=args.max_tokens,
-            stop=["<|im_end|>", "<|endoftext|>"]
-        )
-
-        # 4. Inferência em lote contínuo (Batching Ultrarrápido)
-        print(f"[4/4] Executando inferência paralela em lote com vLLM para {len(prompts)} questões...")
-        vllm_outputs = llm.generate(prompts, sampling_params)
-        generated_texts = [out.outputs[0].text.strip() for out in vllm_outputs]
-    else:
-        print(f"[3/4] vLLM não disponível. Carregando via Hugging Face AutoModelForCausalLM...")
-        import torch
-        from transformers import AutoModelForCausalLM
-        dtype = torch.bfloat16 if (torch.cuda.is_available() and torch.cuda.is_bf16_supported()) else torch.float32
-        device_map = "auto" if torch.cuda.is_available() else "cpu"
-        if model_to_load.endswith(".gguf"):
-            hf_model = AutoModelForCausalLM.from_pretrained(
-                os.path.dirname(os.path.abspath(model_to_load)),
-                gguf_file=os.path.basename(model_to_load),
-                config=tokenizer_source,
-                device_map=device_map,
-                trust_remote_code=False
-            )
-        else:
-            hf_model = AutoModelForCausalLM.from_pretrained(
-                model_to_load,
-                torch_dtype=dtype,
-                device_map=device_map,
-                trust_remote_code=False
-            )
-        hf_model.eval()
-        print(f"[4/4] Executando inferência sequencial para {len(prompts)} questões...")
-        generated_texts = []
-        for idx, p in enumerate(prompts):
-            inp = tokenizer(p, return_tensors="pt").to(hf_model.device)
-            with torch.no_grad():
-                out = hf_model.generate(
-                    **inp,
-                    max_new_tokens=args.max_tokens,
-                    do_sample=False,
-                    pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id
+        try:
+            if model_to_load.endswith(".gguf"):
+                print(f"[3/4] Inicializando vLLM Engine com dtype float16 e load_format='gguf' ({model_to_load})...")
+                llm = LLM(
+                    model=model_to_load,
+                    tokenizer=tokenizer_source,
+                    hf_config_path=tokenizer_source,
+                    load_format="gguf",
+                    trust_remote_code=False,
+                    dtype="float16",
+                    max_model_len=4096,
+                    gpu_memory_utilization=0.90
                 )
-            gen = tokenizer.decode(out[0][inp["input_ids"].shape[1]:], skip_special_tokens=True).strip()
-            generated_texts.append(gen)
-            if (idx + 1) % 10 == 0 or (idx + 1) == len(prompts):
-                print(f"  [*] Progresso: {idx + 1}/{len(prompts)} questões concluídas...")
+            else:
+                print(f"[3/4] Inicializando vLLM Engine com bfloat16 na GPU...")
+                llm = LLM(
+                    model=model_to_load,
+                    tokenizer=tokenizer_source,
+                    trust_remote_code=False,
+                    dtype="bfloat16",
+                    max_model_len=4096,
+                    gpu_memory_utilization=0.90
+                )
+
+            sampling_params = SamplingParams(
+                temperature=0.0,         # Greedy decoding para máxima reprodutibilidade lógica
+                max_tokens=args.max_tokens,
+                stop=["<|im_end|>", "<|endoftext|>"]
+            )
+
+            # 4. Inferência em lote contínuo (Batching Ultrarrápido)
+            print(f"[4/4] Executando inferência paralela em lote com vLLM para {len(prompts)} questões...")
+            vllm_outputs = llm.generate(prompts, sampling_params)
+            generated_texts = [out.outputs[0].text.strip() for out in vllm_outputs]
+        except Exception as vllm_err:
+            print(f"[!] Aviso vLLM: {vllm_err}. Acionando fallback automático...")
+            try:
+                import gc
+                import torch
+                if "llm" in locals():
+                    del llm
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
+            generated_texts = None
+
+    if generated_texts is None:
+        ran_llama_cpp = False
+        if model_to_load.endswith(".gguf"):
+            try:
+                from llama_cpp import Llama
+                print(f"[3/4] Fallback: Inicializando llama-cpp-python com aceleração GPU (n_gpu_layers=-1)...")
+                llm_cpp = Llama(
+                    model_path=model_to_load,
+                    n_gpu_layers=-1,
+                    n_ctx=4096,
+                    verbose=False
+                )
+                print(f"[4/4] Executando inferência via llama-cpp-python para {len(prompts)} questões...")
+                generated_texts = []
+                for idx, p in enumerate(prompts):
+                    res = llm_cpp(
+                        p,
+                        max_tokens=args.max_tokens,
+                        temperature=0.0,
+                        stop=["<|im_end|>", "<|endoftext|>"]
+                    )
+                    gen = res["choices"][0]["text"].strip()
+                    generated_texts.append(gen)
+                    if (idx + 1) % 10 == 0 or (idx + 1) == len(prompts):
+                        print(f"  [*] Progresso: {idx + 1}/{len(prompts)} questões concluídas...")
+                ran_llama_cpp = True
+            except (ImportError, Exception) as lcpp_err:
+                print(f"[!] llama-cpp-python indisponível ou falhou ({lcpp_err}). Tentando Hugging Face AutoModelForCausalLM...")
+                ran_llama_cpp = False
+
+        if not ran_llama_cpp:
+            print(f"[3/4] Carregando via Hugging Face AutoModelForCausalLM...")
+            import torch
+            from transformers import AutoModelForCausalLM, AutoConfig
+            dtype = torch.float16 if model_to_load.endswith(".gguf") else (torch.bfloat16 if (torch.cuda.is_available() and torch.cuda.is_bf16_supported()) else torch.float32)
+            device_map = "auto" if torch.cuda.is_available() else "cpu"
+            if model_to_load.endswith(".gguf"):
+                try:
+                    model_config = AutoConfig.from_pretrained(tokenizer_source, trust_remote_code=False)
+                except Exception:
+                    model_config = tokenizer_source
+                hf_model = AutoModelForCausalLM.from_pretrained(
+                    os.path.dirname(os.path.abspath(model_to_load)),
+                    gguf_file=os.path.basename(model_to_load),
+                    config=model_config,
+                    torch_dtype=dtype,
+                    device_map=device_map,
+                    trust_remote_code=False
+                )
+            else:
+                hf_model = AutoModelForCausalLM.from_pretrained(
+                    model_to_load,
+                    torch_dtype=dtype,
+                    device_map=device_map,
+                    trust_remote_code=False
+                )
+            hf_model.eval()
+            print(f"[4/4] Executando inferência sequencial para {len(prompts)} questões...")
+            generated_texts = []
+            for idx, p in enumerate(prompts):
+                inp = tokenizer(p, return_tensors="pt").to(hf_model.device)
+                with torch.no_grad():
+                    out = hf_model.generate(
+                        **inp,
+                        max_new_tokens=args.max_tokens,
+                        do_sample=False,
+                        pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id
+                    )
+                gen = tokenizer.decode(out[0][inp["input_ids"].shape[1]:], skip_special_tokens=True).strip()
+                generated_texts.append(gen)
+                if (idx + 1) % 10 == 0 or (idx + 1) == len(prompts):
+                    print(f"  [*] Progresso: {idx + 1}/{len(prompts)} questões concluídas...")
 
     total_eval_time = time.time() - start_time
 
