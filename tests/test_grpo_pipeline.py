@@ -29,6 +29,7 @@ from scripts.train_grpo import (
     apply_grpo_compatibility_patches,
     enable_fast_generation_with_kv_cache,
     resolve_resume_checkpoint,
+    get_eos_token_ids,
 )
 
 
@@ -226,13 +227,40 @@ class TestGRPOArgsAndAutoAdjustment:
             sys.argv = ["train_grpo.py"]
             args = parse_args()
             assert args.per_device_train_batch_size == 4
-            assert args.gradient_accumulation_steps == 2
+            assert args.gradient_accumulation_steps == 1
             assert args.num_generations == 4
-            assert args.max_completion_length == 768
-            assert args.save_steps == 25
+            assert args.max_prompt_length == 768
+            assert args.max_completion_length == 512
+            assert args.max_samples == 80
+            assert args.save_steps == 20
             assert args.resume_from_checkpoint is None
+            assert args.gradient_checkpointing is None
+            assert args.use_vllm is False
+            assert args.vllm_gpu_memory_utilization == 0.4
         finally:
             sys.argv = sys_argv_backup
+
+    def test_eos_token_ids_extraction(self):
+        """Valida que get_eos_token_ids coleta nativos e alvos ChatML/Phi-4."""
+        class MockTokenizer:
+            def __init__(self):
+                self.eos_token_id = 100257
+                self.unk_token_id = 0
+                self._map = {
+                    "<|end|>": 100257,
+                    "<|im_end|>": 100260,
+                    "<|endoftext|>": 100257,
+                    "<|eot_id|>": 100262,
+                }
+            def convert_tokens_to_ids(self, token):
+                return self._map.get(token, -1)
+
+        tok = MockTokenizer()
+        ids = get_eos_token_ids(tok)
+        assert 100257 in ids
+        assert 100260 in ids
+        assert 100262 in ids
+        assert len(ids) == len(set(ids))
 
     def test_auto_adjustment_logic(self):
         test_cases = [
@@ -399,13 +427,15 @@ class TestFastGenerationWithKVCache:
         # Aplica o wrapper de aceleração KV-cache
         enable_fast_generation_with_kv_cache(model)
 
-        # Dispara geração
+        # Dispara geração com generation_config explicitamente em kwargs
+        custom_gen_cfg = type("CustomGenConfig", (), {"use_cache": False})()
         dummy_input = torch.tensor([[1, 2]])
-        output = model.generate(input_ids=dummy_input)
+        output = model.generate(input_ids=dummy_input, generation_config=custom_gen_cfg)
 
         # 1. Validações DURANTE model.generate():
         during = model.recorded_state_during_generate
         assert during["kwargs_use_cache"] is True, "use_cache deve ser True nos kwargs durante generate"
+        assert custom_gen_cfg.use_cache is True, "custom_gen_cfg.use_cache em kwargs deve ser setado como True"
         assert during["config_use_cache"] is True, "use_cache deve ser True no model.config durante generate"
         assert during["gen_config_use_cache"] is True, "use_cache deve ser True no generation_config durante generate"
         assert during["model_is_gc"] is False, "is_gradient_checkpointing deve ser False durante generate"

@@ -44,26 +44,36 @@ def apply_grpo_compatibility_patches() -> bool:
     """
     patched_any = False
 
-    # 1. Correção de tuplas em trl.import_utils
+    # 1. Correção de tuplas em trl.import_utils e detecção correta de vLLM
     try:
         import trl.import_utils
+        import importlib.util
+        vllm_installed = importlib.util.find_spec("vllm") is not None
+
         for _attr in dir(trl.import_utils):
             if _attr.startswith("_") and _attr.endswith("_available"):
                 _val = getattr(trl.import_utils, _attr)
-                if isinstance(_val, tuple):
+                if "vllm" in _attr:
+                    setattr(trl.import_utils, _attr, vllm_installed)
+                    patched_any = True
+                elif isinstance(_val, tuple):
                     setattr(trl.import_utils, _attr, bool(_val[0]))
                     patched_any = True
             elif _attr.startswith("is_") and _attr.endswith("_available"):
-                _fn = getattr(trl.import_utils, _attr)
-                if callable(_fn):
-                    try:
-                        _val = _fn()
-                        if isinstance(_val, tuple):
-                            _bool_val = bool(_val[0])
-                            setattr(trl.import_utils, _attr, (lambda b=_bool_val: b))
-                            patched_any = True
-                    except Exception:
-                        pass
+                if "vllm" in _attr:
+                    setattr(trl.import_utils, _attr, (lambda b=vllm_installed: b))
+                    patched_any = True
+                else:
+                    _fn = getattr(trl.import_utils, _attr)
+                    if callable(_fn):
+                        try:
+                            _val = _fn()
+                            if isinstance(_val, tuple):
+                                _bool_val = bool(_val[0])
+                                setattr(trl.import_utils, _attr, (lambda b=_bool_val: b))
+                                patched_any = True
+                        except Exception:
+                            pass
     except Exception:
         pass
 
@@ -273,6 +283,11 @@ def enable_fast_generation_with_kv_cache(model: Any) -> Any:
         # Evitar re-execução redundante caso PeftModel delegue para base_model.generate
         if getattr(enable_fast_generation_with_kv_cache, "_active_generation", False):
             kwargs["use_cache"] = True
+            if "generation_config" in kwargs and kwargs["generation_config"] is not None:
+                try:
+                    kwargs["generation_config"].use_cache = True
+                except Exception:
+                    pass
             return orig_generate(*args, **kwargs)
 
         enable_fast_generation_with_kv_cache._active_generation = True
@@ -314,6 +329,11 @@ def enable_fast_generation_with_kv_cache(model: Any) -> Any:
                 model.generation_config.use_cache = True
 
             kwargs["use_cache"] = True
+            if "generation_config" in kwargs and kwargs["generation_config"] is not None:
+                try:
+                    kwargs["generation_config"].use_cache = True
+                except Exception:
+                    pass
 
             # d) Executar o generate original com KV-Cache 100% ativo!
             return orig_generate(*args, **kwargs)
@@ -426,6 +446,43 @@ def extract_text_from_completion(c: Any) -> str:
     if c is None:
         return ""
     return str(c)
+
+
+def get_eos_token_ids(tokenizer: Any) -> List[int]:
+    """Coleta todos os IDs válidos de stop/EOS tokens do Phi-4 e ChatML para truncamento pontual da geração.
+
+    No Phi-4-mini-instruct, respostas podem terminar com <|end|>, <|im_end|>, <|endoftext|> ou <|eot_id|>.
+    Sem múltiplos EOS configurados, o modelo continuaria gerando até estourar o limite máximo de tokens.
+    """
+    eos_ids: List[int] = []
+    if tokenizer is None:
+        return eos_ids
+
+    # 1. Adicionar o eos_token_id nativo do tokenizer
+    native_eos = getattr(tokenizer, "eos_token_id", None)
+    if isinstance(native_eos, list):
+        for tid in native_eos:
+            if isinstance(tid, int) and tid not in eos_ids:
+                eos_ids.append(tid)
+    elif isinstance(native_eos, int) and native_eos >= 0:
+        eos_ids.append(native_eos)
+
+    # 2. Coletar tokens de parada comuns do Phi-4 e ChatML
+    target_tokens = ["<|end|>", "<|im_end|>", "<|endoftext|>", "<|eot_id|>"]
+    unk_id = getattr(tokenizer, "unk_token_id", None)
+
+    for token in target_tokens:
+        try:
+            tid = tokenizer.convert_tokens_to_ids(token)
+            if isinstance(tid, int) and tid >= 0:
+                if unk_id is not None and tid == unk_id:
+                    continue
+                if tid not in eos_ids:
+                    eos_ids.append(tid)
+        except Exception:
+            pass
+
+    return eos_ids
 
 
 # ==============================================================================
@@ -920,20 +977,20 @@ def parse_args():
     data_group.add_argument(
         "--max_samples",
         type=int,
-        default=400,
-        help="Quantidade de amostras curadas por densidade técnica (padrão: 400; <=0 usa todas as 4.680)."
+        default=80,
+        help="Quantidade de amostras curadas por densidade técnica (padrão: 80; <=0 usa todas as 4.680)."
     )
     data_group.add_argument(
         "--max_prompt_length",
         type=int,
-        default=1024,
-        help="Tamanho máximo de contexto do prompt (padrão: 1024)."
+        default=768,
+        help="Tamanho máximo de contexto do prompt (padrão: 768)."
     )
     data_group.add_argument(
         "--max_completion_length",
         type=int,
-        default=768,
-        help="Tamanho máximo dos rollouts gerados (padrão: 768)."
+        default=512,
+        help="Tamanho máximo dos rollouts gerados (padrão: 512)."
     )
 
     # Argumentos GRPO e Treinamento
@@ -971,8 +1028,21 @@ def parse_args():
     grpo_group.add_argument(
         "--gradient_accumulation_steps",
         type=int,
-        default=2,
-        help="Passos de acumulação de gradiente (padrão: 2; batch global efetivo = 8)."
+        default=1,
+        help="Passos de acumulação de gradiente (padrão: 1; batch global efetivo = 4)."
+    )
+    grpo_group.add_argument(
+        "--gradient_checkpointing",
+        dest="gradient_checkpointing",
+        action="store_true",
+        default=None,
+        help="Habilita gradient checkpointing (padrão: auto; True para VRAM < 35GB, False para A100 >= 35GB)."
+    )
+    grpo_group.add_argument(
+        "--no_gradient_checkpointing",
+        dest="gradient_checkpointing",
+        action="store_false",
+        help="Desabilita explicitamente o gradient checkpointing."
     )
     grpo_group.add_argument(
         "--num_train_epochs", "--epochs",
@@ -990,8 +1060,8 @@ def parse_args():
     grpo_group.add_argument(
         "--save_steps",
         type=int,
-        default=25,
-        help="Intervalo de salvamento de checkpoints (padrão: 25)."
+        default=20,
+        help="Intervalo de salvamento de checkpoints (padrão: 20)."
     )
     grpo_group.add_argument(
         "--resume_from_checkpoint",
@@ -1043,6 +1113,27 @@ def parse_args():
         type=float,
         default=0.05,
         help="Dropout LoRA (padrão: 0.05)."
+    )
+
+    # Argumentos vLLM
+    vllm_group = parser.add_argument_group("vLLM")
+    vllm_group.add_argument(
+        "--use_vllm",
+        action="store_true",
+        default=False,
+        help="Utiliza engine vLLM para geração ultra-rápida de rollouts durante o treinamento GRPO."
+    )
+    vllm_group.add_argument(
+        "--vllm_gpu_memory_utilization",
+        type=float,
+        default=0.4,
+        help="Fração de VRAM alocada para o engine vLLM (padrão: 0.4)."
+    )
+    vllm_group.add_argument(
+        "--vllm_device",
+        type=str,
+        default="auto",
+        help="Dispositivo para o motor vLLM (padrão: 'auto')."
     )
 
     # Flags de Execução
@@ -1167,6 +1258,30 @@ def main():
         )
         args.per_device_train_batch_size = args.num_generations
 
+    # Decisão de Gradient Checkpointing:
+    # Se especificado via CLI, respeita a escolha do usuário.
+    # Caso contrário: False se VRAM >= 35GB (A100), True para GPUs < 35GB (L4, T4, etc.)
+    if args.gradient_checkpointing is not None:
+        use_gc = bool(args.gradient_checkpointing)
+        print(f"[*] Gradient Checkpointing explicitamente definido pelo usuário: {use_gc}")
+    else:
+        if hw_info.get("is_high_vram", False):
+            use_gc = False
+            print("[Auto-Otimização A100] VRAM >= 35GB detectada: Gradient Checkpointing DESATIVADO para aceleração máxima (use_cache nativo permanente).")
+        else:
+            use_gc = True
+            print("[*] VRAM < 35GB detectada: Gradient Checkpointing ATIVADO para segurança de memória.")
+
+    # Verificação e integração do motor vLLM
+    use_vllm = args.use_vllm
+    if use_vllm:
+        import importlib.util
+        if importlib.util.find_spec("vllm") is None:
+            print("[!] Aviso: --use_vllm solicitado, mas o pacote 'vllm' não está instalado no ambiente. Executando rollouts com PyTorch KV-cache nativo.")
+            use_vllm = False
+        else:
+            print(f"[✓] Engine vLLM ATIVADO para rollouts GRPO (GPU Memory Utilization: {args.vllm_gpu_memory_utilization}, Device: {args.vllm_device}).")
+
     print(f"[*] Configurando hiperparâmetros GRPO: lr={args.learning_rate}, beta={args.beta}, G={args.num_generations}...")
     grpo_config_kwargs = {
         "output_dir": args.output_dir,
@@ -1187,12 +1302,21 @@ def main():
         "seed": args.seed,
         "fp16": (args.torch_dtype == "float16"),
         "bf16": (args.torch_dtype == "bfloat16"),
-        "gradient_checkpointing": True,
+        "gradient_checkpointing": use_gc,
         "push_to_hub": args.push_to_hub,
         "hub_model_id": args.hub_model_id,
     }
-    if "gradient_checkpointing_kwargs" in inspect.signature(GRPOConfig.__init__).parameters:
+    if use_gc and "gradient_checkpointing_kwargs" in inspect.signature(GRPOConfig.__init__).parameters:
         grpo_config_kwargs["gradient_checkpointing_kwargs"] = {"use_reentrant": False}
+
+    sig_params = inspect.signature(GRPOConfig.__init__).parameters
+    if "use_vllm" in sig_params:
+        grpo_config_kwargs["use_vllm"] = use_vllm
+        if use_vllm:
+            if "vllm_gpu_memory_utilization" in sig_params:
+                grpo_config_kwargs["vllm_gpu_memory_utilization"] = args.vllm_gpu_memory_utilization
+            if "vllm_device" in sig_params and args.vllm_device != "auto":
+                grpo_config_kwargs["vllm_device"] = args.vllm_device
 
     grpo_config = GRPOConfig(**grpo_config_kwargs)
 
@@ -1217,11 +1341,22 @@ def main():
         peft_config=lora_config,
     )
 
+    # Configuração de todos os Stop/EOS Tokens do Phi-4 e ChatML para truncamento pontual da geração
+    eos_ids = get_eos_token_ids(tokenizer)
+    if eos_ids:
+        print(f"[*] Stop/EOS Token IDs configurados para geração ({len(eos_ids)} tokens): {eos_ids}")
+        if hasattr(trainer, "generation_config") and trainer.generation_config is not None:
+            trainer.generation_config.eos_token_id = eos_ids
+        if hasattr(base_model, "generation_config") and base_model.generation_config is not None:
+            base_model.generation_config.eos_token_id = eos_ids
+        if hasattr(trainer.model, "generation_config") and trainer.model.generation_config is not None:
+            trainer.model.generation_config.eos_token_id = eos_ids
+
     # Aceleração KV-Cache para rollout generation com gradient checkpointing
     enable_fast_generation_with_kv_cache(trainer.model)
     if hasattr(trainer, "model_wrapped") and trainer.model_wrapped is not None:
         enable_fast_generation_with_kv_cache(trainer.model_wrapped)
-    print("[*] Wrapper KV-Cache ativado com sucesso para aceleração de rollouts com gradient checkpointing.")
+    print("[*] Wrapper KV-Cache ativado com sucesso para aceleração de rollouts.")
 
     # 11. Treinamento GRPO
     print("\n" + "=" * 70)

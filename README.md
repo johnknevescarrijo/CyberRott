@@ -597,28 +597,32 @@ def sandbox_code_reward(prompts: list[str], completions: list[list[dict]], **kwa
 
 ### 4. Memory Optimization & Compute Budget (NVIDIA A100 40GB)
 
-GRPO enables true online reinforcement learning on a single **NVIDIA A100 40GB** GPU (such as Google Colab Pro):
+GRPO enables true online reinforcement learning on a single **NVIDIA A100 40GB** GPU (such as Google Colab Pro) finishing in **~25–35 minutes** (80 optimization steps / 320 rollouts):
 - **Critic Elimination**: Saves ~15 GB VRAM by avoiding a separate 3.82B Critic model and optimizer states.
-- **PEFT / LoRA All-Linear**: Adaptation is restricted to rank $r=32$ across linear projections (`qkv_proj`, `o_proj`, `gate_up_proj`, `down_proj`), reducing active trainable parameters to **~130M**.
-- **Batched Group Rollouts**: Leverages continuous batching and KV-caching with $G=4$ or $8$ completions per prompt, running generation in Bfloat16.
-- **Fused AdamW & Non-Reentrant Activation Checkpointing**: Keeps peak backward pass VRAM capped at **~34.5 GB**, leaving ample headroom on a 40GB accelerator.
+- **Single-Generate Optimization (`gradient_accumulation_steps=1`)**: Eliminates redundant `model.generate()` calls per step, batching all 4 rollouts into a single forward pass per prompt.
+- **Full Stop/EOS Token Handling**: Configures all ChatML and Phi-4 stop tokens (`<|end|>`, `<|im_end|>`, `<|endoftext|>`, `<|eot_id|>`), terminating generation immediately upon answer conclusion without wasting tokens.
+- **Native KV-Cache & Auto GC Deactivation**: On accelerators with $\ge 35\text{ GB}$ VRAM (A100 40GB/80GB), gradient checkpointing is automatically disabled, keeping $O(N)$ KV-cache generation active with peak VRAM under 20 GB.
+- **Optional vLLM Engine Acceleration**: Fully supports `--use_vllm` for ultra-high-throughput rollouts with configurable GPU memory utilization (`--vllm_gpu_memory_utilization 0.4`).
 
 ### 5. Production Training Pipeline
 
 ```bash
-# Launch CyberRott v1.2 GRPO Training from the SFT v1.1 Checkpoint
+# Launch CyberRott v1.2 GRPO Training from the SFT v1.1 Checkpoint (A100 Optimized: ~25-35 min runtime)
 python scripts/train_grpo.py \
     --model_name_or_path microsoft/Phi-4-mini-instruct \
     --adapter_name_or_path ./cyberrott_v1_1_sft_lora \
-    --dataset_name data/cyberrott_v1_1_train.jsonl \
+    --dataset_name data/cyberrott_final_train.jsonl \
+    --anchor_file data/dataset_cyber_ready.jsonl \
     --output_dir ./CyberRott-v1.2-GRPO \
+    --max_samples 80 \
     --num_generations 4 \
-    --max_prompt_length 2048 \
-    --max_completion_length 1024 \
+    --max_prompt_length 768 \
+    --max_completion_length 512 \
     --learning_rate 5e-6 \
     --beta 0.04 \
     --per_device_train_batch_size 4 \
-    --gradient_accumulation_steps 2 \
+    --gradient_accumulation_steps 1 \
+    --save_steps 20 \
     --torch_dtype bfloat16
 ```
 
