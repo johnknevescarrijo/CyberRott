@@ -67,64 +67,104 @@ def find_checkpoint_subdir(base_dir: str):
 
     return None
 
-def resolve_model_or_adapter_path(model_name: str, sft_adapter: str = None):
+def resolve_model_or_adapter_path(model_name: str, sft_adapter: str = None, base_model: str = "microsoft/Phi-4-mini-instruct"):
     """
-    Resolve caminhos de modelo e adaptador SFT procurando localmente e nos caminhos padrão do Google Colab / Drive.
+    Resolve caminhos de modelo e adaptador SFT procurando localmente, nos caminhos padrão do Google Colab / Drive
+    ou diretamente no Hugging Face Hub (com suporte a modelos GGUF).
     """
     resolved_model = None
+    tokenizer_source = None
     checked_model_paths = []
 
-    # 1. Se model_name existir localmente
-    if model_name:
+    is_local_path = (model_name.startswith("./") or model_name.startswith("/")) or os.path.exists(model_name)
+
+    if not is_local_path:
+        # Repositório Hugging Face Hub (ex: johnknevescarrijo/CyberRott-v1.2-GRPO)
+        print(f"[*] Inspecionando repositório Hugging Face Hub: '{model_name}'...")
+        try:
+            from huggingface_hub import HfApi, hf_hub_download
+            api = HfApi()
+            repo_files = api.list_repo_files(model_name)
+
+            if "config.json" in repo_files:
+                print(f"[✓] 'config.json' encontrado no repositório Hub. Carregando modelo diretamente.")
+                resolved_model = model_name
+                tokenizer_source = model_name
+            else:
+                gguf_files = [f for f in repo_files if f.endswith(".gguf")]
+                if gguf_files:
+                    gguf_file = gguf_files[0]
+                    print(f"[*] 'config.json' não encontrado, mas arquivo GGUF detectado no Hub: '{gguf_file}'.")
+                    print(f"[*] Baixando {gguf_file} via Hugging Face Hub...")
+                    local_gguf = hf_hub_download(repo_id=model_name, filename=gguf_file)
+                    print(f"[✓] GGUF baixado com sucesso: {local_gguf}")
+                    resolved_model = local_gguf
+                    tokenizer_source = base_model
+                else:
+                    resolved_model = model_name
+                    tokenizer_source = model_name
+        except Exception as e:
+            print(f"[!] Aviso ao inspecionar Hugging Face Hub: {e}. Mantendo '{model_name}'...")
+            resolved_model = model_name
+            tokenizer_source = model_name
+    else:
+        # 1. Se model_name existir localmente
         checked_model_paths.append(model_name)
         if os.path.exists(model_name):
-            valid_path = find_checkpoint_subdir(model_name)
-            resolved_model = valid_path if valid_path else os.path.abspath(model_name)
+            if os.path.isfile(model_name) and model_name.endswith(".gguf"):
+                resolved_model = os.path.abspath(model_name)
+                tokenizer_source = base_model
+            else:
+                valid_path = find_checkpoint_subdir(model_name)
+                resolved_model = valid_path if valid_path else os.path.abspath(model_name)
+                tokenizer_source = resolved_model
 
-    # 2. Se não existir localmente, busca nos caminhos candidatos conhecidos
-    if not resolved_model:
-        model_candidates = [
-            "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_2_GRPO",
-            "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott-v1.2-GRPO",
-            "/content/CyberRott-v1.2-Standalone",
-            "/content/CyberRott1.0/CyberRott-v1.2-GRPO",
-            "/content/CyberRott/CyberRott-v1.2-GRPO",
-            "/content/exports/CyberRott-v1.2-Standalone",
-            "./CyberRott-Phi4-mini-Standalone",
-            "/content/drive/MyDrive/CyberRott_Checkpoints/cyberrott_v1_1_sft_lora",
-        ]
-        for cand in model_candidates:
-            if cand not in checked_model_paths:
-                checked_model_paths.append(cand)
-            if os.path.exists(cand):
-                valid_path = find_checkpoint_subdir(cand)
-                if valid_path:
-                    resolved_model = valid_path
-                    print(f"[*] Checkpoint/Modelo detectado automaticamente em: '{resolved_model}'")
-                    break
+        # 2. Se não existir localmente, busca nos caminhos candidatos conhecidos
+        if not resolved_model:
+            model_candidates = [
+                "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_2_GRPO",
+                "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott-v1.2-GRPO",
+                "/content/CyberRott-v1.2-Standalone",
+                "/content/CyberRott1.0/CyberRott-v1.2-GRPO",
+                "/content/CyberRott/CyberRott-v1.2-GRPO",
+                "/content/exports/CyberRott-v1.2-Standalone",
+                "./CyberRott-Phi4-mini-Standalone",
+                "/content/drive/MyDrive/CyberRott_Checkpoints/cyberrott_v1_1_sft_lora",
+            ]
+            for cand in model_candidates:
+                if cand not in checked_model_paths:
+                    checked_model_paths.append(cand)
+                if os.path.exists(cand):
+                    valid_path = find_checkpoint_subdir(cand)
+                    if valid_path:
+                        resolved_model = valid_path
+                        tokenizer_source = resolved_model
+                        print(f"[*] Checkpoint/Modelo detectado automaticamente em: '{resolved_model}'")
+                        break
 
-    # Se ainda não encontrou e model_name começa com ./ ou /
-    if not resolved_model:
-        if model_name and (model_name.startswith("./") or model_name.startswith("/")):
-            print("\n" + "=" * 70)
-            print(f"❌ [ERRO CRÍTICO] Checkpoint/Modelo local não encontrado para: '{model_name}'")
-            print("=" * 70)
-            print("Caminhos verificados sem sucesso:")
-            for p in checked_model_paths:
-                print(f"  ✖ {p}")
-            print("\n💡 INSTRUÇÕES PARA O GOOGLE COLAB:")
-            print("1. Se o modelo estiver salvo no seu Google Drive, certifique-se de montar o Drive antes:")
-            print("   from google.colab import drive")
-            print("   drive.mount('/content/drive')")
-            print("2. Verifique se os arquivos de checkpoint estão no Google Drive em:")
-            print("   /content/drive/MyDrive/CyberRott_Checkpoints/")
-            print("3. Se o caminho for diferente, passe o argumento exato:")
-            print("   --model_name /caminho/para/seu/modelo\n")
-            print("=" * 70 + "\n")
-            sys.exit(1)
-        else:
-            # Presume identificador do Hugging Face Hub (ex: microsoft/Phi-4-mini-instruct)
-            resolved_model = model_name
+        # Se ainda não encontrou e model_name começa com ./ ou /
+        if not resolved_model:
+            if model_name and (model_name.startswith("./") or model_name.startswith("/")):
+                print("\n" + "=" * 70)
+                print(f"❌ [ERRO CRÍTICO] Checkpoint/Modelo local não encontrado para: '{model_name}'")
+                print("=" * 70)
+                print("Caminhos verificados sem sucesso:")
+                for p in checked_model_paths:
+                    print(f"  ✖ {p}")
+                print("\n💡 INSTRUÇÕES PARA O GOOGLE COLAB:")
+                print("1. Se o modelo estiver salvo no seu Google Drive, certifique-se de montar o Drive antes:")
+                print("   from google.colab import drive")
+                print("   drive.mount('/content/drive')")
+                print("2. Verifique se os arquivos de checkpoint estão no Google Drive em:")
+                print("   /content/drive/MyDrive/CyberRott_Checkpoints/")
+                print("3. Se o caminho for diferente, passe o argumento exato:")
+                print("   --model_name /caminho/para/seu/modelo\n")
+                print("=" * 70 + "\n")
+                sys.exit(1)
+            else:
+                # Presume identificador do Hugging Face Hub (ex: microsoft/Phi-4-mini-instruct)
+                resolved_model = model_name
+                tokenizer_source = model_name
 
     # 3. Resolução automática do adaptador SFT
     resolved_sft = None
@@ -144,7 +184,7 @@ def resolve_model_or_adapter_path(model_name: str, sft_adapter: str = None):
                 print(f"[*] Adaptador SFT detectado automaticamente em: '{resolved_sft}'")
                 break
 
-    return resolved_model, resolved_sft
+    return resolved_model, resolved_sft, tokenizer_source
 
 def extract_answer(text: str) -> str:
     """Extrai com precisão a alternativa (A, B, C ou D) da resposta gerada."""
@@ -175,7 +215,7 @@ def main():
     parser.add_argument(
         "--model_name",
         type=str,
-        default="./CyberRott-v1.2-Standalone",
+        default="johnknevescarrijo/CyberRott-v1.2-GRPO",
         help="Caminho local ou repositório Hugging Face do modelo standalone ou adaptador LoRA"
     )
     parser.add_argument(
@@ -214,7 +254,9 @@ def main():
     timestamp_str = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
 
     # 0. Verificação e Auto-Fusão de Adaptadores LoRA se necessário
-    model_to_load, resolved_sft = resolve_model_or_adapter_path(args.model_name, args.sft_adapter)
+    model_to_load, resolved_sft, tokenizer_source = resolve_model_or_adapter_path(
+        args.model_name, args.sft_adapter, args.base_model
+    )
 
     if os.path.exists(model_to_load) and os.path.isdir(model_to_load):
         is_adapter = os.path.exists(os.path.join(model_to_load, "adapter_config.json"))
@@ -235,15 +277,17 @@ def main():
                     sft_adapter_path=resolved_sft
                 )
             model_to_load = standalone_target
+            tokenizer_source = standalone_target
 
     print("=" * 70)
     print("🚀 Avaliação WMDP-Cyber com Chain-of-Thought (CoT Engine)")
-    print(f"Modelo Alvo:   {model_to_load}")
+    print(f"Modelo Alvo:      {model_to_load}")
+    print(f"Fonte Tokenizer:  {tokenizer_source}")
     if resolved_sft:
-        print(f"Adaptador SFT: {resolved_sft}")
-    print(f"Max Tokens:    {args.max_tokens}")
-    print(f"Amostras:      {args.limit if args.limit else 'Todas as 1.987 questões'}")
-    print(f"Timestamp:     {timestamp_str}")
+        print(f"Adaptador SFT:    {resolved_sft}")
+    print(f"Max Tokens:       {args.max_tokens}")
+    print(f"Amostras:         {args.limit if args.limit else 'Todas as 1.987 questões'}")
+    print(f"Timestamp:        {timestamp_str}")
     print("=" * 70)
 
     # 1. Carregar dataset do Hugging Face
@@ -255,10 +299,10 @@ def main():
     # 2. Carregar Tokenizer para aplicar ChatML
     print("[2/4] Preparando prompts no padrão ChatML com instruções de raciocínio...")
     try:
-        tokenizer = AutoTokenizer.from_pretrained(model_to_load, trust_remote_code=False)
-        print(f"   [✓] Tokenizer carregado a partir de: {model_to_load}")
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_source, trust_remote_code=False)
+        print(f"   [✓] Tokenizer carregado a partir de: {tokenizer_source}")
     except Exception as e:
-        print(f"   [!] Aviso: Falha ao carregar tokenizer de '{model_to_load}' ({e}).")
+        print(f"   [!] Aviso: Falha ao carregar tokenizer de '{tokenizer_source}' ({e}).")
         print(f"   [✓] Fazendo fallback automático para o modelo base: '{args.base_model}'...")
         tokenizer = AutoTokenizer.from_pretrained(args.base_model, trust_remote_code=False)
 
@@ -303,14 +347,26 @@ def main():
         use_vllm = False
 
     if use_vllm:
-        print(f"[3/4] Inicializando vLLM Engine com bfloat16 na GPU...")
-        llm = LLM(
-            model=model_to_load,
-            trust_remote_code=False,
-            dtype="bfloat16",
-            max_model_len=4096,
-            gpu_memory_utilization=0.90
-        )
+        if model_to_load.endswith(".gguf"):
+            print(f"[3/4] Inicializando vLLM Engine com dtype float16 para GGUF ({model_to_load})...")
+            llm = LLM(
+                model=model_to_load,
+                tokenizer=tokenizer_source,
+                trust_remote_code=False,
+                dtype="float16",
+                max_model_len=4096,
+                gpu_memory_utilization=0.90
+            )
+        else:
+            print(f"[3/4] Inicializando vLLM Engine com bfloat16 na GPU...")
+            llm = LLM(
+                model=model_to_load,
+                tokenizer=tokenizer_source,
+                trust_remote_code=False,
+                dtype="bfloat16",
+                max_model_len=4096,
+                gpu_memory_utilization=0.90
+            )
 
         sampling_params = SamplingParams(
             temperature=0.0,         # Greedy decoding para máxima reprodutibilidade lógica
@@ -328,12 +384,19 @@ def main():
         from transformers import AutoModelForCausalLM
         dtype = torch.bfloat16 if (torch.cuda.is_available() and torch.cuda.is_bf16_supported()) else torch.float32
         device_map = "auto" if torch.cuda.is_available() else "cpu"
-        hf_model = AutoModelForCausalLM.from_pretrained(
-            model_to_load,
-            torch_dtype=dtype,
-            device_map=device_map,
-            trust_remote_code=False
-        )
+        if model_to_load.endswith(".gguf"):
+            hf_model = AutoModelForCausalLM.from_pretrained(
+                model_to_load,
+                device_map=device_map,
+                trust_remote_code=False
+            )
+        else:
+            hf_model = AutoModelForCausalLM.from_pretrained(
+                model_to_load,
+                torch_dtype=dtype,
+                device_map=device_map,
+                trust_remote_code=False
+            )
         hf_model.eval()
         print(f"[4/4] Executando inferência sequencial para {len(prompts)} questões...")
         generated_texts = []
@@ -395,7 +458,7 @@ def main():
 
     # 6. Salvar artefatos JSON gravados em disco
     os.makedirs(args.output_dir, exist_ok=True)
-    sanitized_name = args.model_name.replace("/", "_")
+    sanitized_name = args.model_name.replace("/", "_").replace(".", "_")
 
     # Arquivo 1: Resumo compacto (leve, ótimo para compartilhar)
     summary_data = {
