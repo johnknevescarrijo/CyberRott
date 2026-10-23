@@ -309,6 +309,14 @@ def main():
                 torch_dtype=torch.bfloat16,
                 low_cpu_mem_usage=True
             )
+            # Remove flags de quantização GGUF para permitir save_pretrained em formato safetensors padrão
+            temp_model.is_quantized = False
+            temp_model.hf_quantizer = None
+            if hasattr(temp_model.config, "quantization_config"):
+                delattr(temp_model.config, "quantization_config")
+            if hasattr(temp_model, "quantization_config"):
+                delattr(temp_model, "quantization_config")
+
             temp_model.save_pretrained(unpacked_dir, safe_serialization=True)
             del temp_model
             gc.collect()
