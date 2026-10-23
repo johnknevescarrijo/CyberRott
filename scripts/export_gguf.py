@@ -25,6 +25,13 @@ import argparse
 import subprocess
 from pathlib import Path
 
+# Desativa verificação do torchao para compatibilidade no Google Colab
+try:
+    import peft.import_utils
+    peft.import_utils.is_torchao_available = lambda: False
+except Exception:
+    pass
+
 
 def run_cmd(command: str, description: str = ""):
     """Executa um comando no shell com tratamento de erro e logs visuais."""
