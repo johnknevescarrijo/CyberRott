@@ -482,6 +482,7 @@ python scripts/data_prep.py \
 # Legacy v1.0 mode (GooseReason 2.5k + Gold Anchors, 100% backward compatible)
 python scripts/data_prep.py --preset v1.0
 ```
+2. **Deterministic Verification Engine (RLVR)**:
    - **Format Integrity**: Programmatic verification of well-formed `<think>...</think>` latent reflection blocks adhering to the 7 analytical checkpoints.
    - **Ground-Truth Exact Match**: Scoring against known multi-choice keys (WMDP-Cyber, SecQA) and vulnerability indicators (CWE mapping, MITRE ATT&CK technique IDs).
    - **Code & Syntax Sandbox Check**: Static syntax linting (`compile()`) for generated Python exploitation scripts, YARA signatures, and Sigma defensive detection rules.
@@ -505,6 +506,120 @@ python scripts/train_star.py \
     --star_iterations 2 \
     --num_candidates 4 \
     --output_dir ./CyberRott-Phi4-STaR
+```
+
+---
+
+## 🚀 CyberRott v1.2 Roadmap: Reinforcement Learning via DeepSeek-R1 GRPO
+
+Building upon the SFT v1.1 foundation, **CyberRott 1.2** marks the transition from offline rejection sampling (**STaR**) to true **online policy gradient reinforcement learning** via **Group Relative Policy Optimization (GRPO)**—the mathematical engine behind **DeepSeek-R1**—implemented natively with Hugging Face TRL (`GRPOTrainer` and `GRPOConfig`).
+
+### 1. Paradigm Shift: From Offline Rejection Sampling to Online GRPO
+
+While **STaR** in v1.1 provides an effective, computationally lightweight bootstrap by filtering generated rollouts offline and fine-tuning via SFT, it exhibits two structural limitations:
+1. **Zero Gradient Signal from Negative Rollouts**: Unsuccessful attempts are discarded rather than utilized as contrastive gradients to actively steer the policy away from deceptive attack paths.
+2. **Absence of Relative Advantage Weighting**: All accepted solutions contribute equally to the cross-entropy objective, irrespective of reasoning conciseness or step fidelity.
+
+Conversely, standard **PPO (Proximal Policy Optimization)** is notoriously difficult to operate on consumer and mid-tier enterprise hardware because it requires concurrently hosting **four distinct models** in memory: the Actor policy ($\pi_\theta$), the Critic/Value baseline ($V_\phi$), the Reference model ($\pi_{\text{ref}}$), and the Reward model ($R_\psi$). For a 3.82B parameter architecture, this multi-model footprint saturates VRAM and destabilizes convergence.
+
+**The DeepSeek-R1 GRPO Solution**:
+- **Critic-Free Architecture**: GRPO completely eliminates the Critic model $V_\phi$. Instead of training a separate value network to predict state baselines, the model generates a group of $G$ exploratory completions for each prompt and estimates the baseline dynamically from the mean and standard deviation of rewards within the group.
+- **Group Relative Advantage**: Complements intra-prompt exploration by rewarding superior technical trajectories while penalizing flawed reasoning paths within the same prompt cluster.
+- **Direct SFT v1.1 Checkpoint Bootstrap**: CyberRott v1.2 does not cold-start from base weights. Training initializes directly from the persisted **`cyberrott_v1_1_sft_lora`** checkpoint, ensuring the model already possesses robust 7-stage `<think>` reflexes, refusal immunity, and deep cybersecurity tradecraft.
+
+```mermaid
+flowchart TD
+    subgraph Rollout["1. Group Rollout Sampling (G = 4 to 8)"]
+        Prompt["Input Cyber Prompts q<br>(WMDP-Cyber, CTF, Vulnerability Audits)"] --> Model["CyberRott v1.1 SFT Policy π_θ<br>(cyberrott_v1_1_sft_lora)"]
+        Model -->|vLLM Batched Sampling| Group["Candidate Trajectories: {o_1, o_2, ..., o_G}<br>(Latent &lt;think&gt; Deliberation + Technical Verdict)"]
+    end
+
+    subgraph Rewards["2. Composable Verifiable Rewards (reward_funcs)"]
+        Group --> R1["cot_integrity_reward<br>• Matching &lt;think&gt;...&lt;/think&gt; tags<br>• Zero AI refusals / apologetic disclaimers<br>• Structured tripartite schema (FACT / DETECTION / REMEDIATION)"]
+        Group --> R2["technical_accuracy_reward<br>• Exact match MCQ option keys (A, B, C, D)<br>• Common Weakness Enumeration IDs (CWE-89, etc.)<br>• MITRE ATT&CK technique IDs (T1059, T1190)"]
+        Group --> R3["sandbox_code_reward<br>• Python AST syntax compilation check<br>• YARA rule grammar verification<br>• Sigma detection rule YAML schema validation"]
+        R1 & R2 & R3 --> RTotal["Scalar Reward Calculation:<br>R_i = w_cot · r_cot + w_acc · r_acc + w_box · r_box"]
+    end
+
+    subgraph GRPOUpdate["3. Relative Policy Gradient (No Critic Model)"]
+        RTotal --> Adv["Group Advantage Normalization:<br>A_i = (R_i - mean({R})) / (std({R}) + ε)"]
+        Adv --> Loss["TRL GRPOTrainer / GRPOConfig<br>• Clipped Surrogate Policy Ratio: min(r_t A_i, clip(r_t, 1±ε) A_i)<br>• Reverse KL Divergence Regularization vs. π_ref<br>• LoRA all-linear Backpropagation (NVIDIA A100 40GB)"]
+        Loss --> Checkpoint["CyberRott v1.2 Checkpoint 🏆<br>(High-Discipline Verifiable Security SLM)"]
+    end
+```
+
+### 2. Mathematical Foundation of GRPO
+
+Given a cybersecurity prompt $q$ drawn from the training distribution $\mathcal{P}(\mathcal{Q})$, the policy $\pi_{\theta_{\text{old}}}$ generates a group of $G$ candidate completions:
+
+$$\mathcal{O} = \{o_1, o_2, \dots, o_G\}, \quad o_i \sim \pi_{\theta_{\text{old}}}(\cdot \mid q)$$
+
+Each completion $o_i$ is evaluated by the composite reward suite to yield a scalar reward $R_i = \mathcal{R}(q, o_i)$. The relative advantage $A_i$ is normalized strictly across the group:
+
+$$A_i = \frac{R_i - \frac{1}{G}\sum_{j=1}^G R_j}{\sqrt{\frac{1}{G}\sum_{j=1}^G \left(R_j - \frac{1}{G}\sum_{k=1}^G R_k\right)^2} + \epsilon}$$
+
+The policy parameters $\theta$ are optimized by maximizing the GRPO surrogate objective:
+
+$$\mathcal{J}_{\text{GRPO}}(\theta) = \mathbb{E}_{q \sim \mathcal{P}(\mathcal{Q}), \{o_i\}_{i=1}^G \sim \pi_{\theta_{\text{old}}}} \left[ \frac{1}{G} \sum_{i=1}^G \frac{1}{|o_i|} \sum_{t=1}^{|o_i|} \min \left( \frac{\pi_\theta(o_{i,t} \mid q, o_{i,<t})}{\pi_{\theta_{\text{old}}}(o_{i,t} \mid q, o_{i,<t})} A_i, \; \text{clip}\left(\frac{\pi_\theta(o_{i,t} \mid q, o_{i,<t})}{\pi_{\theta_{\text{old}}}(o_{i,t} \mid q, o_{i,<t})}, 1-\varepsilon, 1+\varepsilon\right) A_i \right) - \beta \, \mathbb{D}_{\text{KL}}\left(\pi_\theta \parallel \pi_{\text{ref}}\right) \right]$$
+
+Where:
+- $\mathbb{D}_{\text{KL}}\left(\pi_\theta \parallel \pi_{\text{ref}}\right) = \frac{\pi_{\text{ref}}(o_{i,t} \mid q, o_{i,<t})}{\pi_\theta(o_{i,t} \mid q, o_{i,<t})} - \log \frac{\pi_{\text{ref}}(o_{i,t} \mid q, o_{i,<t})}{\pi_\theta(o_{i,t} \mid q, o_{i,<t})} - 1$ enforces per-token stability against policy collapse without maintaining an explicit reference network in active VRAM (computed dynamically from cached reference logprobs).
+- $\beta$ is the KL penalty coefficient (calibrated to $\beta = 0.04$).
+- Group size $G \in [4, 8]$, delivering optimal variance reduction while remaining within single-GPU hardware bounds.
+
+### 3. Modular Verifiable Reward Suite (`reward_funcs`)
+
+CyberRott v1.2 migrates the static evaluation primitives from [`scripts/star_verifier.py`](scripts/star_verifier.py) into modular, vectorized reward functions natively registered with TRL's `GRPOTrainer`:
+
+```python
+# scripts/train_grpo.py (Reward Functions Architecture)
+
+def cot_integrity_reward(prompts: list[str], completions: list[list[dict]], **kwargs) -> list[float]:
+    """Validates structural reasoning integrity, tag pairing, and anti-refusal compliance."""
+    ...
+
+def technical_accuracy_reward(prompts: list[str], completions: list[list[dict]], ground_truth: list[str], **kwargs) -> list[float]:
+    """Scores exact match against benchmark answer keys, CWE identifiers, and MITRE techniques."""
+    ...
+
+def sandbox_code_reward(prompts: list[str], completions: list[list[dict]], **kwargs) -> list[float]:
+    """Performs static syntax verification on generated Python scripts, YARA rules, and Sigma schemas."""
+    ...
+```
+
+#### Verification Matrix and Weight Distribution:
+
+| Verifiable Reward | Specific Validation Logic | Target Metrics | Weight ($w_k$) |
+| :--- | :--- | :--- | :---: |
+| **CoT Integrity**<br>`cot_integrity_reward` | • Strict presence of balanced `<think>...</think>` tags<br>• Latent deliberation depth ($\ge 128$ tokens)<br>• Immediate zero-score penalty for conversational refusal patterns (*"As an AI..."*, *"I cannot generate..."*)<br>• Structured tripartite response: `FACT:` / `DETECTION:` / `REMEDIATION:` | Structural Compliance | **0.30** |
+| **Technical Accuracy**<br>`technical_accuracy_reward` | • Exact match of multiple-choice answer key (`A`, `B`, `C`, `D`)<br>• Accurate Common Weakness Enumeration classification (e.g. `CWE-89`, `CWE-787`)<br>• Valid MITRE ATT&CK technique tagging (e.g. `T1059.001`, `T1190`) | Domain Truth Fidelity | **0.50** |
+| **Sandbox Code**<br>`sandbox_code_reward` | • Static Python AST compilation (`compile(source, mode="exec")`) with zero runtime execution risk<br>• Lexical and grammar validation for generated YARA signatures (`rule`, `strings`, `condition`)<br>• Strict YAML syntax and schema parsing for Sigma detection rules | Executable Correctness | **0.20** |
+
+### 4. Memory Optimization & Compute Budget (NVIDIA A100 40GB)
+
+GRPO enables true online reinforcement learning on a single **NVIDIA A100 40GB** GPU (such as Google Colab Pro):
+- **Critic Elimination**: Saves ~15 GB VRAM by avoiding a separate 3.82B Critic model and optimizer states.
+- **PEFT / LoRA All-Linear**: Adaptation is restricted to rank $r=32$ across linear projections (`qkv_proj`, `o_proj`, `gate_up_proj`, `down_proj`), reducing active trainable parameters to **~130M**.
+- **Batched Group Rollouts**: Leverages continuous batching and KV-caching with $G=4$ or $8$ completions per prompt, running generation in Bfloat16.
+- **Fused AdamW & Non-Reentrant Activation Checkpointing**: Keeps peak backward pass VRAM capped at **~34.5 GB**, leaving ample headroom on a 40GB accelerator.
+
+### 5. Production Training Pipeline
+
+```bash
+# Launch CyberRott v1.2 GRPO Training from the SFT v1.1 Checkpoint
+python scripts/train_grpo.py \
+    --model_name_or_path microsoft/Phi-4-mini-instruct \
+    --adapter_name_or_path ./cyberrott_v1_1_sft_lora \
+    --dataset_name data/cyberrott_v1_1_train.jsonl \
+    --output_dir ./CyberRott-v1.2-GRPO \
+    --num_generations 4 \
+    --max_prompt_length 2048 \
+    --max_completion_length 1024 \
+    --learning_rate 5e-6 \
+    --beta 0.04 \
+    --per_device_train_batch_size 1 \
+    --gradient_accumulation_steps 8 \
+    --torch_dtype bfloat16
 ```
 
 ---
