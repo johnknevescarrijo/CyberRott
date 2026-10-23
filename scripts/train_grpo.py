@@ -234,6 +234,179 @@ def setup_hardware_optimizations(args: Optional[argparse.Namespace] = None) -> D
 
 
 # ==============================================================================
+# Aceleração KV-Cache para Rollouts GRPO com Gradient Checkpointing
+# ==============================================================================
+
+def enable_fast_generation_with_kv_cache(model: Any) -> Any:
+    """Wrapper de aceleração que reativa o KV-Cache durante model.generate()
+    quando o gradient checkpointing está ativo durante o treinamento GRPO.
+
+    Gargalo Crítico Resolvido:
+    Em arquiteturas baseadas em Phi3DecoderLayer (ex: Phi-4-mini-instruct), quando
+    gradient_checkpointing=True e o modelo está em modo train(), o forward da camada força:
+      `use_cache=False` e `past_key_values=None`.
+    O GRPOTrainer executa model.generate() sob torch.no_grad(), mas se o modelo mantiver
+    o flag de gradient checkpointing, o KV-Cache é descartado a cada token. Sem KV-Cache,
+    gerar centenas de tokens possui complexidade O(N^2) recalculando atenção completa,
+    tornando o generate() 10x a 15x mais lento (passando de ~15s para ~170s por iteração no Colab A100).
+
+    Mecanismo da Solução:
+    Intercepta model.generate():
+    1. Salva o estado de treino e do gradient checkpointing em todos os submódulos.
+    2. Coloca o modelo temporariamente em model.eval().
+    3. Desativa o gradient checkpointing no modelo e em todas as camadas (m.gradient_checkpointing = False).
+    4. Força model.config.use_cache = True e kwargs['use_cache'] = True.
+    5. Executa a geração original com KV-Cache 100% ativo ($O(N)$ em vez de $O(N^2)$).
+    6. No bloco finally:, restaura model.config.use_cache = False, reativa o gradient
+       checkpointing (model.gradient_checkpointing_enable e m.gradient_checkpointing = True)
+       e restaura o modo de treino original (model.train()).
+    """
+    if model is None or not hasattr(model, "generate"):
+        return model
+
+    if getattr(model.generate, "_is_kv_cache_wrapped", False):
+        return model
+
+    orig_generate = model.generate
+
+    def fast_generate(*args, **kwargs):
+        # Evitar re-execução redundante caso PeftModel delegue para base_model.generate
+        if getattr(enable_fast_generation_with_kv_cache, "_active_generation", False):
+            kwargs["use_cache"] = True
+            return orig_generate(*args, **kwargs)
+
+        enable_fast_generation_with_kv_cache._active_generation = True
+        was_training = getattr(model, "training", False)
+
+        # 1. Mapear módulos com gradient checkpointing ativo
+        gc_modules = []
+        for m in model.modules():
+            if hasattr(m, "gradient_checkpointing") and getattr(m, "gradient_checkpointing", False):
+                gc_modules.append(m)
+
+        prev_is_gc = getattr(model, "is_gradient_checkpointing", False)
+
+        try:
+            # a) Colocar em modo eval para desligar dropout e flags de treinamento
+            if hasattr(model, "eval"):
+                model.eval()
+
+            # b) Desativar temporariamente o gradient checkpointing em todos os módulos
+            if hasattr(model, "gradient_checkpointing_disable"):
+                try:
+                    model.gradient_checkpointing_disable()
+                except Exception:
+                    pass
+
+            if hasattr(model, "is_gradient_checkpointing"):
+                model.is_gradient_checkpointing = False
+
+            for m in gc_modules:
+                try:
+                    m.gradient_checkpointing = False
+                except Exception:
+                    pass
+
+            # c) Forçar use_cache = True no config do modelo e nos argumentos de geração
+            if hasattr(model, "config") and model.config is not None:
+                model.config.use_cache = True
+            if hasattr(model, "generation_config") and model.generation_config is not None:
+                model.generation_config.use_cache = True
+
+            kwargs["use_cache"] = True
+
+            # d) Executar o generate original com KV-Cache 100% ativo!
+            return orig_generate(*args, **kwargs)
+
+        finally:
+            # e) Restaurar use_cache = False no config (necessário para backprop com gradient checkpointing)
+            if hasattr(model, "config") and model.config is not None:
+                model.config.use_cache = False
+            if hasattr(model, "generation_config") and model.generation_config is not None:
+                model.generation_config.use_cache = False
+
+            # f) Reativar gradient checkpointing no modelo e em todas as camadas
+            if prev_is_gc or gc_modules:
+                if hasattr(model, "gradient_checkpointing_enable"):
+                    try:
+                        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+                    except TypeError:
+                        try:
+                            model.gradient_checkpointing_enable()
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
+
+                for m in gc_modules:
+                    try:
+                        m.gradient_checkpointing = True
+                    except Exception:
+                        pass
+
+                if hasattr(model, "is_gradient_checkpointing"):
+                    model.is_gradient_checkpointing = True
+
+            # g) Restaurar o modo de treinamento se estava ativo
+            if was_training and hasattr(model, "train"):
+                model.train()
+
+            enable_fast_generation_with_kv_cache._active_generation = False
+
+    fast_generate._is_kv_cache_wrapped = True
+    fast_generate._orig_generate = orig_generate
+    model.generate = fast_generate
+    return model
+
+enable_fast_generation_with_kv_cache._active_generation = False
+
+
+def resolve_resume_checkpoint(resume_arg: Optional[str], output_dir: str) -> Optional[str]:
+    """Resolve o checkpoint para retomar o treinamento GRPO.
+
+    Args:
+        resume_arg: Caminho explícito para o checkpoint ou 'auto' para autodetecção.
+        output_dir: Diretório onde os checkpoints 'checkpoint-*' são salvos.
+
+    Returns:
+        Caminho do checkpoint a retomar ou None para iniciar do início.
+    """
+    if not resume_arg:
+        return None
+
+    cleaned_arg = str(resume_arg).strip()
+    if cleaned_arg.lower() == "auto":
+        if not os.path.isdir(output_dir):
+            print(f"[*] Detecção 'auto': Diretório '{output_dir}' não existe ainda. Iniciando treinamento do início.")
+            return None
+
+        candidates = []
+        for entry in os.listdir(output_dir):
+            full_path = os.path.join(output_dir, entry)
+            if os.path.isdir(full_path) and entry.startswith("checkpoint-"):
+                match = re.search(r"checkpoint-(\d+)", entry)
+                if match:
+                    candidates.append((int(match.group(1)), full_path))
+
+        if not candidates:
+            print(f"[*] Detecção 'auto': Nenhum checkpoint encontrado em '{output_dir}'. Iniciando treinamento do início.")
+            return None
+
+        candidates.sort(key=lambda x: x[0])
+        latest_checkpoint = candidates[-1][1]
+        step_num = candidates[-1][0]
+        print(f"[✓] Detecção 'auto': Retomando automaticamente do último checkpoint: {latest_checkpoint} (Step {step_num})")
+        return latest_checkpoint
+
+    if os.path.exists(cleaned_arg):
+        print(f"[✓] Retomando treinamento a partir de checkpoint especificado: {cleaned_arg}")
+        return cleaned_arg
+    else:
+        print(f"[!] Checkpoint especificado não encontrado: '{cleaned_arg}'. Iniciando treinamento do início.")
+        return None
+
+
+# ==============================================================================
 # Helper de Extração de Texto de Completions (Compatibilidade com TRL)
 # ==============================================================================
 
@@ -759,8 +932,8 @@ def parse_args():
     data_group.add_argument(
         "--max_completion_length",
         type=int,
-        default=1024,
-        help="Tamanho máximo dos rollouts gerados (padrão: 1024)."
+        default=768,
+        help="Tamanho máximo dos rollouts gerados (padrão: 768)."
     )
 
     # Argumentos GRPO e Treinamento
@@ -817,8 +990,14 @@ def parse_args():
     grpo_group.add_argument(
         "--save_steps",
         type=int,
-        default=50,
-        help="Intervalo de salvamento de checkpoints."
+        default=25,
+        help="Intervalo de salvamento de checkpoints (padrão: 25)."
+    )
+    grpo_group.add_argument(
+        "--resume_from_checkpoint",
+        type=str,
+        default=None,
+        help="Caminho para checkpoint ou 'auto' para retomar automaticamente do mais recente em --output_dir."
     )
     grpo_group.add_argument(
         "--logging_steps",
@@ -966,6 +1145,9 @@ def main():
     if hasattr(base_model, "enable_input_require_grads"):
         base_model.enable_input_require_grads()
 
+    # Ativa aceleração KV-cache para o modelo base durante rollouts com gradient checkpointing
+    enable_fast_generation_with_kv_cache(base_model)
+
     # 8. Configuração de novo LoRA para o treinamento da fase GRPO
     print(f"[*] Configurando LoRA limpo para a fase de RL: r={args.lora_r}, alpha={args.lora_alpha}, target=all-linear...")
     lora_config = LoraConfig(
@@ -1035,12 +1217,19 @@ def main():
         peft_config=lora_config,
     )
 
+    # Aceleração KV-Cache para rollout generation com gradient checkpointing
+    enable_fast_generation_with_kv_cache(trainer.model)
+    if hasattr(trainer, "model_wrapped") and trainer.model_wrapped is not None:
+        enable_fast_generation_with_kv_cache(trainer.model_wrapped)
+    print("[*] Wrapper KV-Cache ativado com sucesso para aceleração de rollouts com gradient checkpointing.")
+
     # 11. Treinamento GRPO
     print("\n" + "=" * 70)
     print("🔥 INICIANDO TREINAMENTO GRPO ONLINE (CyberRott v1.2)")
     print("=" * 70 + "\n")
 
-    train_result = trainer.train()
+    resume_checkpoint = resolve_resume_checkpoint(args.resume_from_checkpoint, args.output_dir)
+    train_result = trainer.train(resume_from_checkpoint=resume_checkpoint)
 
     print("\n" + "=" * 70)
     print(f"[✓] Treinamento GRPO concluído com sucesso!")

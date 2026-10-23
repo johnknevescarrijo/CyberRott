@@ -27,6 +27,8 @@ from scripts.train_grpo import (
     run_dry_run_validation,
     parse_args,
     apply_grpo_compatibility_patches,
+    enable_fast_generation_with_kv_cache,
+    resolve_resume_checkpoint,
 )
 
 
@@ -226,6 +228,9 @@ class TestGRPOArgsAndAutoAdjustment:
             assert args.per_device_train_batch_size == 4
             assert args.gradient_accumulation_steps == 2
             assert args.num_generations == 4
+            assert args.max_completion_length == 768
+            assert args.save_steps == 25
+            assert args.resume_from_checkpoint is None
         finally:
             sys.argv = sys_argv_backup
 
@@ -339,5 +344,141 @@ class TestGRPOTrainerCompatibility:
         assert train_result is not None
         assert train_result.global_step == 1
         assert "train_loss" in train_result.metrics
+
+
+class TestFastGenerationWithKVCache:
+    """Valida a aceleração de rollouts reativando KV-cache com gradient checkpointing ativo."""
+
+    def test_kv_cache_active_during_generate_and_gc_restored_after(self):
+        """Verifica que durante model.generate() o use_cache permanece True e gradient_checkpointing fica False,
+        e que logo após model.generate() terminar o gradient_checkpointing volta a ser True e use_cache False."""
+        import torch
+
+        class MockDecoderLayer(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.gradient_checkpointing = True
+
+        class MockModel(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.layer = MockDecoderLayer()
+                self.is_gradient_checkpointing = True
+                self.config = type("Config", (), {"use_cache": False})()
+                self.generation_config = type("GenConfig", (), {"use_cache": False})()
+                self.recorded_state_during_generate = {}
+
+            def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs=None):
+                self.is_gradient_checkpointing = True
+                self.layer.gradient_checkpointing = True
+
+            def gradient_checkpointing_disable(self):
+                self.is_gradient_checkpointing = False
+                self.layer.gradient_checkpointing = False
+
+            def generate(self, *args, **kwargs):
+                self.recorded_state_during_generate = {
+                    "kwargs_use_cache": kwargs.get("use_cache"),
+                    "config_use_cache": getattr(self.config, "use_cache", None),
+                    "gen_config_use_cache": getattr(self.generation_config, "use_cache", None),
+                    "model_is_gc": getattr(self, "is_gradient_checkpointing", None),
+                    "layer_gc": getattr(self.layer, "gradient_checkpointing", None),
+                    "is_training": self.training,
+                }
+                return torch.tensor([[101, 102, 103]])
+
+        model = MockModel()
+        model.train()
+
+        # Estado inicial pré-wrapper
+        assert model.training is True
+        assert model.is_gradient_checkpointing is True
+        assert model.layer.gradient_checkpointing is True
+        assert model.config.use_cache is False
+
+        # Aplica o wrapper de aceleração KV-cache
+        enable_fast_generation_with_kv_cache(model)
+
+        # Dispara geração
+        dummy_input = torch.tensor([[1, 2]])
+        output = model.generate(input_ids=dummy_input)
+
+        # 1. Validações DURANTE model.generate():
+        during = model.recorded_state_during_generate
+        assert during["kwargs_use_cache"] is True, "use_cache deve ser True nos kwargs durante generate"
+        assert during["config_use_cache"] is True, "use_cache deve ser True no model.config durante generate"
+        assert during["gen_config_use_cache"] is True, "use_cache deve ser True no generation_config durante generate"
+        assert during["model_is_gc"] is False, "is_gradient_checkpointing deve ser False durante generate"
+        assert during["layer_gc"] is False, "layer.gradient_checkpointing deve ser False durante generate"
+        assert during["is_training"] is False, "modelo deve estar em eval() durante generate para evitar descarte de cache"
+
+        # 2. Validações APÓS model.generate():
+        assert model.is_gradient_checkpointing is True, "is_gradient_checkpointing deve ser restaurado para True pós generate"
+        assert model.layer.gradient_checkpointing is True, "layer.gradient_checkpointing deve ser restaurado para True pós generate"
+        assert model.config.use_cache is False, "model.config.use_cache deve ser restaurado para False pós generate"
+        assert model.generation_config.use_cache is False, "generation_config.use_cache deve ser restaurado para False pós generate"
+        assert model.training is True, "modo de treinamento deve ser restaurado para True pós generate"
+
+    def test_fast_generation_restores_state_even_on_exception(self):
+        """Garante que mesmo se a geração falhar/interromper, o estado de treino e gradient checkpointing é restaurado."""
+        import torch
+
+        class FailingModel(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.is_gradient_checkpointing = True
+                self.config = type("Config", (), {"use_cache": False})()
+
+            def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs=None):
+                self.is_gradient_checkpointing = True
+
+            def gradient_checkpointing_disable(self):
+                self.is_gradient_checkpointing = False
+
+            def generate(self, *args, **kwargs):
+                raise RuntimeError("Simulação de OOM ou interrupção na geração")
+
+        model = FailingModel()
+        model.train()
+        enable_fast_generation_with_kv_cache(model)
+
+        with pytest.raises(RuntimeError, match="Simulação de OOM"):
+            model.generate()
+
+        assert model.is_gradient_checkpointing is True
+        assert model.config.use_cache is False
+        assert model.training is True
+
+    def test_resolve_resume_checkpoint(self, tmp_path):
+        """Testa a autodetecção de checkpoints ('auto') e caminhos explícitos."""
+        # 1. Sem argumento -> None
+        assert resolve_resume_checkpoint(None, str(tmp_path)) is None
+        assert resolve_resume_checkpoint("", str(tmp_path)) is None
+
+        # 2. 'auto' com diretório vazio ou inexistente -> None
+        assert resolve_resume_checkpoint("auto", str(tmp_path / "nao_existe")) is None
+        empty_dir = tmp_path / "output_empty"
+        empty_dir.mkdir()
+        assert resolve_resume_checkpoint("auto", str(empty_dir)) is None
+
+        # 3. 'auto' com múltiplos checkpoints -> seleciona o mais recente por step
+        run_dir = tmp_path / "output_run"
+        run_dir.mkdir()
+        ckpt25 = run_dir / "checkpoint-25"
+        ckpt50 = run_dir / "checkpoint-50"
+        ckpt100 = run_dir / "checkpoint-100"
+        ckpt25.mkdir()
+        ckpt50.mkdir()
+        ckpt100.mkdir()
+
+        resolved = resolve_resume_checkpoint("auto", str(run_dir))
+        assert resolved == str(ckpt100)
+
+        # 4. Caminho explícito existente
+        assert resolve_resume_checkpoint(str(ckpt50), str(run_dir)) == str(ckpt50)
+
+        # 5. Caminho explícito inexistente -> fallback None
+        assert resolve_resume_checkpoint(str(run_dir / "checkpoint-999"), str(run_dir)) is None
+
 
 
