@@ -22,6 +22,11 @@ tags:
 - ollama
 datasets:
 - nvidia/Nemotron-Research-GooseReason-0.7M
+- m-a-p/CodeFeedback-Filtered-Instruction
+- open-r1/codeforces-cots
+- bespokelabs/Bespoke-Stratos-17k
+- CyberNative/Code_Vulnerability_Security_DPO
+- AlicanKiraz0/Cybersecurity-Dataset-v1
 - cais/wmdp
 pipeline_tag: text-generation
 model-index:
@@ -112,6 +117,22 @@ void parse_packet(const char *payload, int len) {
 }
 ```
 ```
+
+---
+
+## 📚 Curated Training & Alignment Datasets
+
+CyberRott v1.2 utilizes an open-source, Zero-API-Cost curated dataset corpus:
+
+| Dataset | Hugging Face Repository | Primary Domain & Application |
+| :--- | :--- | :--- |
+| **NVIDIA GooseReason-0.7M** | [`nvidia/Nemotron-Research-GooseReason-0.7M`](https://huggingface.co/datasets/nvidia/Nemotron-Research-GooseReason-0.7M) | Deep analytical reasoning, math, and structured code logic |
+| **CodeFeedback Filtered** | [`m-a-p/CodeFeedback-Filtered-Instruction`](https://huggingface.co/datasets/m-a-p/CodeFeedback-Filtered-Instruction) | Code review, memory corruption analysis & safe refactoring |
+| **Open-R1 CoTs** | [`open-r1/codeforces-cots`](https://huggingface.co/datasets/open-r1/codeforces-cots) | Long Chain-of-Thought deliberation trajectories (DeepSeek-R1 style) |
+| **Bespoke Stratos 17k** | [`bespokelabs/Bespoke-Stratos-17k`](https://huggingface.co/datasets/bespokelabs/Bespoke-Stratos-17k) | High-density multi-step reasoning trajectories |
+| **CyberNative Security DPO** | [`CyberNative/Code_Vulnerability_Security_DPO`](https://huggingface.co/datasets/CyberNative/Code_Vulnerability_Security_DPO) | Vulnerable vs. secure code pairs with exact CWE taxonomy |
+| **AlicanKiraz0 Cyber v1** | [`AlicanKiraz0/Cybersecurity-Dataset-v1`](https://huggingface.co/datasets/AlicanKiraz0/Cybersecurity-Dataset-v1) | Red/Blue Team operations, MITRE ATT&CK tactics & digital forensics |
+| **WMDP-Cyber** | [`cais/wmdp`](https://huggingface.co/datasets/cais/wmdp) | Official academic benchmark for high-hazard cybersecurity capabilities |
 
 ---
 
