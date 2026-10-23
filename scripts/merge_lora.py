@@ -1,11 +1,11 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Script para mesclar (merge) os pesos do LoRA com o modelo base Phi-4-mini
-e gerar um modelo standalone pronto para exportação (vLLM, GGUF/llama.cpp, HuggingFace Hub).
-"""
-
 import os
+import sys
+
+# Desativa TensorFlow quebrado no Python 3.13 do Colab
+os.environ["USE_TF"] = "0"
+os.environ["USE_TORCH"] = "1"
+sys.modules["tensorflow"] = None
+
 import argparse
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
