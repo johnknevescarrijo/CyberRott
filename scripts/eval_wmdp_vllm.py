@@ -13,6 +13,7 @@ import sys
 # Desativa TensorFlow quebrado no Python 3.13 do Colab
 os.environ["USE_TF"] = "0"
 os.environ["USE_TORCH"] = "1"
+os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
 sys.modules["tensorflow"] = None
 
 import re
@@ -279,6 +280,18 @@ def main():
             model_to_load = standalone_target
             tokenizer_source = standalone_target
 
+    if model_to_load.endswith(".gguf"):
+        from transformers import PreTrainedConfig
+        _orig_get_config_dict = PreTrainedConfig._get_config_dict
+
+        @classmethod
+        def _safe_gguf_get_config_dict(cls, pretrained_model_name_or_path, **kwargs):
+            if str(pretrained_model_name_or_path).endswith(".gguf"):
+                pretrained_model_name_or_path = tokenizer_source
+            return _orig_get_config_dict(pretrained_model_name_or_path, **kwargs)
+
+        PreTrainedConfig._get_config_dict = _safe_gguf_get_config_dict
+
     print("=" * 70)
     print("🚀 Avaliação WMDP-Cyber com Chain-of-Thought (CoT Engine)")
     print(f"Modelo Alvo:      {model_to_load}")
@@ -352,6 +365,7 @@ def main():
             llm = LLM(
                 model=model_to_load,
                 tokenizer=tokenizer_source,
+                hf_config_path=tokenizer_source,
                 trust_remote_code=False,
                 dtype="float16",
                 max_model_len=4096,
@@ -386,7 +400,9 @@ def main():
         device_map = "auto" if torch.cuda.is_available() else "cpu"
         if model_to_load.endswith(".gguf"):
             hf_model = AutoModelForCausalLM.from_pretrained(
-                model_to_load,
+                os.path.dirname(os.path.abspath(model_to_load)),
+                gguf_file=os.path.basename(model_to_load),
+                config=tokenizer_source,
                 device_map=device_map,
                 trust_remote_code=False
             )
