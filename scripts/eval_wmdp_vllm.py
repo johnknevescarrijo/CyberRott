@@ -281,16 +281,45 @@ def main():
             tokenizer_source = standalone_target
 
     if model_to_load.endswith(".gguf"):
-        from transformers import PreTrainedConfig
-        _orig_get_config_dict = PreTrainedConfig._get_config_dict
+        try:
+            import gguf
+        except ImportError:
+            print("[*] Instalando pacote 'gguf>=0.10.0' necessário para descompactação...")
+            import subprocess
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "gguf>=0.10.0"])
 
-        @classmethod
-        def _safe_gguf_get_config_dict(cls, pretrained_model_name_or_path, **kwargs):
-            if str(pretrained_model_name_or_path).endswith(".gguf"):
-                pretrained_model_name_or_path = tokenizer_source
-            return _orig_get_config_dict(pretrained_model_name_or_path, **kwargs)
+        unpacked_dir = "/tmp/cyberrott_v1_2_hf_safetensors"
+        if not os.path.exists(os.path.join(unpacked_dir, "config.json")):
+            print(f"[*] Convertendo GGUF ({os.path.basename(model_to_load)}) para formato safetensors nativo do vLLM em '{unpacked_dir}'...")
+            os.makedirs(unpacked_dir, exist_ok=True)
+            try:
+                tokenizer_tmp = AutoTokenizer.from_pretrained(tokenizer_source, trust_remote_code=False)
+            except Exception:
+                tokenizer_tmp = AutoTokenizer.from_pretrained(args.base_model, trust_remote_code=False)
+            tokenizer_tmp.save_pretrained(unpacked_dir)
 
-        PreTrainedConfig._get_config_dict = _safe_gguf_get_config_dict
+            import gc
+            import torch
+            from transformers import AutoModelForCausalLM
+            gguf_dir = os.path.dirname(os.path.abspath(model_to_load))
+            gguf_filename = os.path.basename(model_to_load)
+            temp_model = AutoModelForCausalLM.from_pretrained(
+                gguf_dir,
+                gguf_file=gguf_filename,
+                torch_dtype=torch.bfloat16,
+                low_cpu_mem_usage=True
+            )
+            temp_model.save_pretrained(unpacked_dir, safe_serialization=True)
+            del temp_model
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            print(f"   [✓] Modelo convertido com sucesso para safetensors em: {unpacked_dir}")
+        else:
+            print(f"[*] Modelo safetensors em cache detectado em: '{unpacked_dir}'")
+
+        model_to_load = unpacked_dir
+        tokenizer_source = unpacked_dir
 
     print("=" * 70)
     print("🚀 Avaliação WMDP-Cyber com Chain-of-Thought (CoT Engine)")
@@ -363,28 +392,15 @@ def main():
 
     if use_vllm:
         try:
-            if model_to_load.endswith(".gguf"):
-                print(f"[3/4] Inicializando vLLM Engine com dtype float16 e load_format='gguf' ({model_to_load})...")
-                llm = LLM(
-                    model=model_to_load,
-                    tokenizer=tokenizer_source,
-                    hf_config_path=tokenizer_source,
-                    load_format="gguf",
-                    trust_remote_code=False,
-                    dtype="float16",
-                    max_model_len=4096,
-                    gpu_memory_utilization=0.90
-                )
-            else:
-                print(f"[3/4] Inicializando vLLM Engine com bfloat16 na GPU...")
-                llm = LLM(
-                    model=model_to_load,
-                    tokenizer=tokenizer_source,
-                    trust_remote_code=False,
-                    dtype="bfloat16",
-                    max_model_len=4096,
-                    gpu_memory_utilization=0.90
-                )
+            print(f"[3/4] Inicializando vLLM Engine com bfloat16 na GPU...")
+            llm = LLM(
+                model=model_to_load,
+                tokenizer=tokenizer_source,
+                trust_remote_code=False,
+                dtype="bfloat16",
+                max_model_len=4096,
+                gpu_memory_utilization=0.90
+            )
 
             sampling_params = SamplingParams(
                 temperature=0.0,         # Greedy decoding para máxima reprodutibilidade lógica
