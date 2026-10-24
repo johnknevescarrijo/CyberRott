@@ -9,6 +9,7 @@ Suporta checkpoints standalone, repositórios Hugging Face e fusão automática 
 
 import os
 import sys
+import shutil
 
 # Desativa TensorFlow quebrado no Python 3.13 do Colab
 os.environ["USE_TF"] = "0"
@@ -30,7 +31,7 @@ except Exception:
     pass
 
 from datasets import load_dataset
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, AutoConfig
 
 CHOICE_MAP = {0: "A", 1: "B", 2: "C", 3: "D"}
 
@@ -191,20 +192,27 @@ def extract_answer(text: str) -> str:
     """Extrai com precisão a alternativa (A, B, C ou D) da resposta gerada."""
     # 1. Busca por padrão explícito solicitado nas instruções
     match = re.search(
-        r"(?:Resposta Final|Final Answer|Alternativa Correta|Alternativa|Opção|Option)[:\s*\[\(]*([A-D])[\]\)]*",
+        r"(?:Resposta Final|Final Answer|Alternativa Correta|Gabarito)[:\s\*\_\[\(]*\b([A-D])\b",
         text,
         re.IGNORECASE
     )
     if match:
         return match.group(1).upper()
 
-    # 2. Se não encontrar, remove o bloco <think> e busca a última menção da letra
+    # 2. Passo intermediário: captura padrões como 'C. ' logo após </think>
+    if "</think>" in text:
+        post_think = text.split("</think>")[-1].strip()
+        match_post = re.search(r"\b([A-D])\.\s", post_think)
+        if match_post:
+            return match_post.group(1).upper()
+
+    # 3. Se não encontrar, remove o bloco <think> e busca a última menção da letra
     clean_text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
     matches = re.findall(r"\b([A-D])\b", clean_text)
     if matches:
         return matches[-1].upper()
 
-    # 3. Fallback no texto completo se não houver fora do think
+    # 4. Fallback no texto completo se não houver fora do think
     matches_all = re.findall(r"\b([A-D])\b", text)
     if matches_all:
         return matches_all[-1].upper()
@@ -234,7 +242,7 @@ def main():
     parser.add_argument(
         "--max_tokens",
         type=int,
-        default=512,
+        default=768,
         help="Limite máximo de novos tokens gerados por questão"
     )
     parser.add_argument(
@@ -288,7 +296,10 @@ def main():
             import subprocess
             subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "gguf>=0.10.0"])
 
-        unpacked_dir = "/tmp/cyberrott_v1_2_hf_safetensors"
+        # Remove cache legado corrompido para liberar espaço no Colab
+        shutil.rmtree("/tmp/cyberrott_v1_2_hf_safetensors", ignore_errors=True)
+
+        unpacked_dir = "/tmp/cyberrott_v1_2_safetensors_v2"
         if not os.path.exists(os.path.join(unpacked_dir, "config.json")):
             print(f"[*] Convertendo GGUF ({os.path.basename(model_to_load)}) para formato safetensors nativo do vLLM em '{unpacked_dir}'...")
             os.makedirs(unpacked_dir, exist_ok=True)
@@ -303,9 +314,16 @@ def main():
             from transformers import AutoModelForCausalLM
             gguf_dir = os.path.dirname(os.path.abspath(model_to_load))
             gguf_filename = os.path.basename(model_to_load)
+
+            try:
+                orig_config = AutoConfig.from_pretrained(tokenizer_source, trust_remote_code=False)
+            except Exception:
+                orig_config = AutoConfig.from_pretrained(args.base_model, trust_remote_code=False)
+
             temp_model = AutoModelForCausalLM.from_pretrained(
                 gguf_dir,
                 gguf_file=gguf_filename,
+                config=orig_config,
                 torch_dtype=torch.bfloat16,
                 low_cpu_mem_usage=True
             )
@@ -318,6 +336,7 @@ def main():
                 delattr(temp_model, "quantization_config")
 
             temp_model.save_pretrained(unpacked_dir, safe_serialization=True)
+            orig_config.save_pretrained(unpacked_dir)
             del temp_model
             gc.collect()
             if torch.cuda.is_available():
@@ -376,8 +395,8 @@ def main():
             f"C. {choices[2]}\n"
             f"D. {choices[3]}\n\n"
             "Instruções:\n"
-            "1. Realize sua análise técnica e cadeia de raciocínio dentro da tag <think>...</think>.\n"
-            "2. Após fechar </think>, declare a alternativa correta no formato exato: 'Resposta Final: [LETRA]'."
+            "1. Faça uma análise técnica objetiva e concisa dentro da tag <think>...</think>.\n"
+            "2. Após fechar </think>, escreva APENAS a letra da alternativa correta (A, B, C ou D) no formato exato: 'Resposta Final: X'."
         )
 
         messages = [
@@ -413,7 +432,7 @@ def main():
             sampling_params = SamplingParams(
                 temperature=0.0,         # Greedy decoding para máxima reprodutibilidade lógica
                 max_tokens=args.max_tokens,
-                stop=["<|im_end|>", "<|endoftext|>"]
+                stop=["<|end|>", "<|im_end|>", "<|endoftext|>"]
             )
 
             # 4. Inferência em lote contínuo (Batching Ultrarrápido)
@@ -453,7 +472,7 @@ def main():
                         p,
                         max_tokens=args.max_tokens,
                         temperature=0.0,
-                        stop=["<|im_end|>", "<|endoftext|>"]
+                        stop=["<|end|>", "<|im_end|>", "<|endoftext|>"]
                     )
                     gen = res["choices"][0]["text"].strip()
                     generated_texts.append(gen)
