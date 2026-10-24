@@ -24,6 +24,8 @@ import shutil
 import urllib.request
 import argparse
 import inspect
+import functools
+import dataclasses
 from typing import List, Dict, Any, Optional, Tuple, Union
 
 # -----------------------------------------------------------------------------
@@ -94,6 +96,7 @@ def apply_grpo_compatibility_patches() -> bool:
         if not getattr(GRPOTrainer.__init__, "_is_patched", False):
             _orig_grpo_init = GRPOTrainer.__init__
 
+            @functools.wraps(_orig_grpo_init)
             def _patched_grpo_init(self, *args, **kwargs):
                 model = kwargs.get("model", args[0] if len(args) > 0 else None)
                 if model is not None and not hasattr(model, "warnings_issued"):
@@ -104,6 +107,7 @@ def apply_grpo_compatibility_patches() -> bool:
                 return _orig_grpo_init(self, *args, **kwargs)
 
             _patched_grpo_init._is_patched = True
+            _patched_grpo_init._orig_init = _orig_grpo_init
             GRPOTrainer.__init__ = _patched_grpo_init
             patched_any = True
 
@@ -495,14 +499,20 @@ def sync_checkpoint_to_google_drive(
 # ==============================================================================
 
 def extract_text_from_completion(c: Any) -> str:
-    """Extrai texto string de completions nos formatos list[str] ou list[list[dict]]."""
+    """Extrai texto string de completions nos formatos list[str], list[dict] ou list[list[dict]]."""
     if isinstance(c, str):
         return c
     if isinstance(c, list):
         if len(c) == 0:
             return ""
-        if isinstance(c[0], dict) and "content" in c[0]:
-            return str(c[0]["content"])
+        if isinstance(c[0], dict):
+            # Formato conversacional TRL: busca prioritariamente a mensagem do assistente
+            for msg in reversed(c):
+                if isinstance(msg, dict) and msg.get("role") == "assistant" and "content" in msg:
+                    return str(msg["content"])
+            # Fallback para o primeiro item com 'content' (ex.: c[0]["content"])
+            if "content" in c[0]:
+                return str(c[0]["content"])
         if isinstance(c[0], str):
             return "".join(c)
     if isinstance(c, dict) and "content" in c:
@@ -1206,6 +1216,151 @@ def resolve_vllm_kwargs(
 
 
 # ==============================================================================
+# Truncamento de Prompt e Filtragem de Argumentos GRPOConfig (Compatibilidade TRL)
+# ==============================================================================
+
+def _tokenize_helper(tokenizer: Any, text: str) -> List[int]:
+    """Tokeniza texto de forma resiliente tolerando variações de assinatura do tokenizer."""
+    try:
+        return tokenizer.encode(text, add_special_tokens=False)
+    except TypeError:
+        try:
+            return tokenizer.encode(text)
+        except Exception:
+            return [ord(c) for c in text]
+
+
+def _decode_helper(tokenizer: Any, tokens: List[int]) -> str:
+    """Decodifica tokens de forma resiliente tolerando variações de assinatura do tokenizer."""
+    try:
+        return tokenizer.decode(tokens, skip_special_tokens=False)
+    except TypeError:
+        try:
+            return tokenizer.decode(tokens)
+        except Exception:
+            return "".join(chr(t) for t in tokens)
+
+
+def truncate_prompt(
+    prompt: Union[str, List[Dict[str, str]]],
+    tokenizer: Any,
+    max_prompt_length: int,
+) -> Union[str, List[Dict[str, str]]]:
+    """Trunca o prompt mantendo o final (lado esquerdo truncado) se exceder max_prompt_length.
+
+    Preserva integralmente a intenção e instrução mais recente do usuário (right-side/suffix),
+    eliminando tokens mais antigos do início caso a contagem exceda o limite orçamentário.
+    """
+    if not prompt or max_prompt_length <= 0 or tokenizer is None:
+        return prompt
+
+    if isinstance(prompt, str):
+        tokens = _tokenize_helper(tokenizer, prompt)
+        if len(tokens) > max_prompt_length:
+            tokens = tokens[-max_prompt_length:]
+            return _decode_helper(tokenizer, tokens)
+        return prompt
+
+    if isinstance(prompt, list):
+        copied_prompt = [dict(m) for m in prompt]
+        if not copied_prompt:
+            return copied_prompt
+
+        if len(copied_prompt) == 1:
+            content = copied_prompt[0].get("content", "")
+            tokens = _tokenize_helper(tokenizer, content)
+            if len(tokens) > max_prompt_length:
+                tokens = tokens[-max_prompt_length:]
+                copied_prompt[0]["content"] = _decode_helper(tokenizer, tokens)
+            return copied_prompt
+
+        msg_tokens = [_tokenize_helper(tokenizer, m.get("content", "")) for m in copied_prompt]
+        total_tokens = sum(len(t) for t in msg_tokens)
+        if total_tokens <= max_prompt_length:
+            return copied_prompt
+
+        # Se a última mensagem sozinha já exceder ou atingir o limite orçamentário
+        if len(msg_tokens[-1]) >= max_prompt_length:
+            last_tokens = msg_tokens[-1][-max_prompt_length:]
+            copied_prompt[-1]["content"] = _decode_helper(tokenizer, last_tokens)
+            for idx in range(len(copied_prompt) - 1):
+                copied_prompt[idx]["content"] = ""
+            return [m for m in copied_prompt if m.get("content")]
+
+        # Caso contrário, preserva a última mensagem inteira e trunca mensagens anteriores (descartando início)
+        budget_for_others = max_prompt_length - len(msg_tokens[-1])
+        for idx in range(len(copied_prompt) - 2, -1, -1):
+            cur_tokens = msg_tokens[idx]
+            if len(cur_tokens) <= budget_for_others:
+                budget_for_others -= len(cur_tokens)
+            else:
+                if budget_for_others > 0:
+                    truncated = cur_tokens[-budget_for_others:]
+                    copied_prompt[idx]["content"] = _decode_helper(tokenizer, truncated)
+                    budget_for_others = 0
+                else:
+                    copied_prompt[idx]["content"] = ""
+
+        return [m for m in copied_prompt if m.get("content") or m.get("role") == "system"]
+
+    return prompt
+
+
+def truncate_dataset_prompts(
+    records: List[Dict[str, Any]],
+    tokenizer: Any,
+    max_prompt_length: int,
+) -> List[Dict[str, Any]]:
+    """Aplica truncamento manual de prompt em todos os registros do dataset mantendo o final do contexto."""
+    if not records or tokenizer is None or max_prompt_length <= 0:
+        return records
+
+    truncated_records = []
+    for r in records:
+        r_copy = dict(r)
+        if "prompt" in r_copy:
+            r_copy["prompt"] = truncate_prompt(r_copy["prompt"], tokenizer, max_prompt_length)
+        truncated_records.append(r_copy)
+    return truncated_records
+
+
+def filter_supported_kwargs(
+    config_cls: Any,
+    kwargs: Dict[str, Any],
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Filtra kwargs para instanciação de classes de configuração (ex.: GRPOConfig / TrainingArguments).
+
+    Identifica parâmetros suportados inspecionando dataclasses.fields (fonte primária para dataclasses,
+    incluindo parâmetros herdados de TrainingArguments) e inspect.signature(config_cls.__init__).
+    Retorna tupla: (filtered_kwargs, dropped_kwargs).
+    """
+    supported = set()
+    if dataclasses.is_dataclass(config_cls):
+        supported.update(f.name for f in dataclasses.fields(config_cls))
+    try:
+        if inspect.isclass(config_cls):
+            sig = inspect.signature(config_cls.__init__)
+        else:
+            sig = inspect.signature(config_cls)
+        for name, param in sig.parameters.items():
+            if name != "self" and param.kind != inspect.Parameter.VAR_KEYWORD:
+                supported.add(name)
+    except Exception:
+        pass
+
+    filtered: Dict[str, Any] = {}
+    dropped: Dict[str, Any] = {}
+
+    for k, v in kwargs.items():
+        if k in supported:
+            filtered[k] = v
+        else:
+            dropped[k] = v
+
+    return filtered, dropped
+
+
+# ==============================================================================
 # Pipeline Principal de Treinamento GRPO
 # ==============================================================================
 
@@ -1493,15 +1648,12 @@ def main():
     trl_version = getattr(trl, "__version__", "desconhecida")
     print(f"[*] Versão do TRL detectada: v{trl_version}")
 
-    # Converter registros para HuggingFace Dataset
-    hf_dataset = Dataset.from_list(dataset_records)
-    print(f"[✓] Hugging Face Dataset construído com {len(hf_dataset)} amostras.")
-
     # 5. Carregar Tokenizer
     print(f"[*] Carregando tokenizer de '{args.model_name_or_path}'...")
     tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path, trust_remote_code=False)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.truncation_side = "left"
 
     # 6. Carregar Modelo Base
     dtype_map = {
@@ -1639,7 +1791,44 @@ def main():
     # Aplicação estrita dos kwargs vLLM resolvidos
     grpo_config_kwargs.update(vllm_kwargs)
 
-    grpo_config = GRPOConfig(**grpo_config_kwargs)
+    # Identificação de campos suportados por GRPOConfig
+    supported_grpo_fields = set()
+    if dataclasses.is_dataclass(GRPOConfig):
+        supported_grpo_fields.update(f.name for f in dataclasses.fields(GRPOConfig))
+    try:
+        supported_grpo_fields.update(p for p in inspect.signature(GRPOConfig.__init__).parameters if p != "self")
+    except Exception:
+        pass
+
+    # Se a versão nova do TRL tiver generation_batch_size/steps_per_generation:
+    # Garante divisibilidade de (per_device_train_batch_size * gradient_accumulation_steps) por num_generations
+    effective_gen_batch = args.per_device_train_batch_size * args.gradient_accumulation_steps
+    if "generation_batch_size" in supported_grpo_fields:
+        grpo_config_kwargs["generation_batch_size"] = effective_gen_batch
+        print(f"[*] TRL moderno: generation_batch_size configurado como {effective_gen_batch} (divisível por G={args.num_generations}).")
+
+    # Filtra os kwargs suportados pelo GRPOConfig da versão instalada do TRL
+    filtered_config_kwargs, dropped_config_kwargs = filter_supported_kwargs(GRPOConfig, grpo_config_kwargs)
+
+    # Tratamento específico para kwargs não suportados:
+    if dropped_config_kwargs:
+        dropped_names = ", ".join(sorted(dropped_config_kwargs.keys()))
+        print(f"[!] Parâmetros ignorados por incompatibilidade com TRL {trl_version}: {dropped_names}")
+
+    # Truncamento manual do prompt no dataset se max_prompt_length não for suportado pelo GRPOConfig
+    if "max_prompt_length" in dropped_config_kwargs:
+        print(
+            f"[*] 'max_prompt_length' não suportado nativamente pelo GRPOConfig (TRL {trl_version}). "
+            f"Aplicando truncamento manual no dataset ({args.max_prompt_length} tokens, truncation_side='left')..."
+        )
+        dataset_records = truncate_dataset_prompts(dataset_records, tokenizer, args.max_prompt_length)
+        print(f"[✓] Truncamento manual de prompts concluído para {len(dataset_records)} amostras.")
+
+    # Converter registros para HuggingFace Dataset
+    hf_dataset = Dataset.from_list(dataset_records)
+    print(f"[✓] Hugging Face Dataset construído com {len(hf_dataset)} amostras.")
+
+    grpo_config = GRPOConfig(**filtered_config_kwargs)
 
     # 10. Inicialização do GRPOTrainer
     reward_suite = [
@@ -1652,15 +1841,23 @@ def main():
     if not hasattr(base_model, "warnings_issued"):
         base_model.warnings_issued = {}
 
+    trainer_init_params = inspect.signature(GRPOTrainer.__init__).parameters
+    trainer_kwargs = {
+        "model": base_model,
+        "reward_funcs": reward_suite,
+        "args": grpo_config,
+        "train_dataset": hf_dataset,
+        "peft_config": lora_config,
+    }
+    if "processing_class" in trainer_init_params:
+        trainer_kwargs["processing_class"] = tokenizer
+    elif "tokenizer" in trainer_init_params:
+        trainer_kwargs["tokenizer"] = tokenizer
+    else:
+        trainer_kwargs["processing_class"] = tokenizer
+
     print("[*] Inicializando GRPOTrainer com a suíte de 3 recompensas verificáveis...")
-    trainer = GRPOTrainer(
-        model=base_model,
-        reward_funcs=reward_suite,
-        args=grpo_config,
-        train_dataset=hf_dataset,
-        processing_class=tokenizer,
-        peft_config=lora_config,
-    )
+    trainer = GRPOTrainer(**trainer_kwargs)
 
     # Configuração de todos os Stop/EOS Tokens do Phi-4 e ChatML para truncamento pontual da geração
     eos_ids = get_eos_token_ids(tokenizer)

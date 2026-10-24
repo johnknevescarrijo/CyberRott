@@ -18,6 +18,7 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import inspect
+import dataclasses
 from scripts.train_grpo import (
     cot_integrity_reward,
     technical_accuracy_reward,
@@ -33,6 +34,9 @@ from scripts.train_grpo import (
     get_eos_token_ids,
     resolve_vllm_kwargs,
     probe_vllm_server,
+    filter_supported_kwargs,
+    truncate_prompt,
+    truncate_dataset_prompts,
 )
 
 
@@ -723,6 +727,226 @@ class TestVLLMConfiguration:
     def test_probe_vllm_server_offline_port(self):
         """Probe TCP em porta inativa retorna False com segurança dentro do timeout."""
         assert probe_vllm_server(port=59123, timeout=0.1) is False
+
+
+class TestGRPOConfigKwargsAndPromptTruncation:
+    """Valida a filtragem resiliente de kwargs do GRPOConfig (compatibilidade com TRL >= 0.19)
+    e o truncamento manual de prompts no dataset preservando o final do contexto."""
+
+    class DummyTokenizer:
+        """Tokenizer fake determinístico para testes isolados sem carregar modelos reais."""
+        def __init__(self):
+            self.truncation_side = "right"
+
+        def encode(self, text, add_special_tokens=False):
+            if not text:
+                return []
+            return text.split()
+
+        def decode(self, tokens, skip_special_tokens=False):
+            return " ".join(tokens)
+
+    @dataclasses.dataclass
+    class FakeModernGRPOConfig:
+        """Simula GRPOConfig do TRL novo (>= 0.19) onde max_prompt_length foi removido."""
+        output_dir: str
+        learning_rate: float
+        max_completion_length: int
+        per_device_train_batch_size: int
+        num_generations: int
+        generation_batch_size: int = 16
+
+    @dataclasses.dataclass
+    class FakeLegacyGRPOConfig:
+        """Simula GRPOConfig do TRL clássico que aceita max_prompt_length."""
+        output_dir: str
+        learning_rate: float
+        max_prompt_length: int
+        max_completion_length: int
+        per_device_train_batch_size: int
+
+    def test_filter_supported_kwargs_removes_unsupported_max_prompt_length(self):
+        """Valida que kwargs não suportados (ex.: max_prompt_length) são isolados em dropped."""
+        raw_kwargs = {
+            "output_dir": "./output_test",
+            "learning_rate": 5e-6,
+            "max_prompt_length": 512,  # Ausente na classe moderna
+            "max_completion_length": 256,
+            "per_device_train_batch_size": 8,
+            "num_generations": 8,
+            "generation_batch_size": 16,
+            "future_unsupported_param": "ignorar",
+        }
+
+        filtered, dropped = filter_supported_kwargs(self.FakeModernGRPOConfig, raw_kwargs)
+
+        assert "max_prompt_length" in dropped
+        assert dropped["max_prompt_length"] == 512
+        assert "future_unsupported_param" in dropped
+        assert "max_prompt_length" not in filtered
+        assert "future_unsupported_param" not in filtered
+
+        assert filtered["output_dir"] == "./output_test"
+        assert filtered["learning_rate"] == 5e-6
+        assert filtered["max_completion_length"] == 256
+        assert filtered["generation_batch_size"] == 16
+
+        # Garante que a instanciação com kwargs filtrados executa com 100% de sucesso sem TypeError
+        cfg = self.FakeModernGRPOConfig(**filtered)
+        assert cfg.output_dir == "./output_test"
+        assert cfg.max_completion_length == 256
+
+    def test_filter_supported_kwargs_preserves_supported_max_prompt_length(self):
+        """Valida que kwargs suportados são preservados integralmente."""
+        raw_kwargs = {
+            "output_dir": "./legacy_out",
+            "learning_rate": 1e-5,
+            "max_prompt_length": 768,
+            "max_completion_length": 512,
+            "per_device_train_batch_size": 4,
+            "invalid_arg_test": True,
+        }
+
+        filtered, dropped = filter_supported_kwargs(self.FakeLegacyGRPOConfig, raw_kwargs)
+
+        assert "max_prompt_length" in filtered
+        assert filtered["max_prompt_length"] == 768
+        assert "invalid_arg_test" in dropped
+
+        cfg = self.FakeLegacyGRPOConfig(**filtered)
+        assert cfg.max_prompt_length == 768
+
+    def test_truncate_prompt_plain_string_preserves_end(self):
+        """Valida truncamento de string pura preservando o final (suffix) do prompt."""
+        tok = self.DummyTokenizer()
+        text = "word1 word2 word3 word4 word5 word6 word7 word8 word9 word10"
+
+        # Trunca para 4 tokens mantendo o final
+        truncated = truncate_prompt(text, tok, max_prompt_length=4)
+        assert truncated == "word7 word8 word9 word10"
+
+        # Texto menor que limite permanece intacto
+        assert truncate_prompt("word1 word2", tok, max_prompt_length=5) == "word1 word2"
+
+    def test_truncate_prompt_conversational_list_preserves_end(self):
+        """Valida truncamento em formato conversacional list[dict] mantendo a instrução do usuário."""
+        tok = self.DummyTokenizer()
+        prompt_msgs = [
+            {"role": "system", "content": "sys1 sys2"},
+            {"role": "user", "content": "u1 u2 u3 u4 u5 u6 u7 u8"},
+        ]
+
+        # Limite = 6 tokens: user=8 excede, preserva os últimos 6 tokens do user
+        truncated_6 = truncate_prompt(prompt_msgs, tok, max_prompt_length=6)
+        assert len(truncated_6) == 1
+        assert truncated_6[0]["role"] == "user"
+        assert truncated_6[0]["content"] == "u3 u4 u5 u6 u7 u8"
+
+        # Limite = 9 tokens: user tem 8, sobra 1 para system -> system='sys2', user='u1 u2 u3 u4 u5 u6 u7 u8'
+        truncated_9 = truncate_prompt(prompt_msgs, tok, max_prompt_length=9)
+        assert len(truncated_9) == 2
+        assert truncated_9[0]["content"] == "sys2"
+        assert truncated_9[1]["content"] == "u1 u2 u3 u4 u5 u6 u7 u8"
+
+    def test_truncate_dataset_prompts_batch(self):
+        """Valida que truncate_dataset_prompts processa lote de registros preservando metadados."""
+        tok = self.DummyTokenizer()
+        dataset = [
+            {
+                "prompt": "alpha beta gamma delta epsilon zeta eta",
+                "reference_answer": "ref1",
+                "expected_cwe": "CWE-89",
+            },
+            {
+                "prompt": [
+                    {"role": "system", "content": "s1 s2"},
+                    {"role": "user", "content": "p1 p2 p3 p4"},
+                ],
+                "reference_answer": "ref2",
+                "expected_cwe": "CWE-79",
+            },
+        ]
+
+        truncated = truncate_dataset_prompts(dataset, tok, max_prompt_length=3)
+        assert len(truncated) == 2
+
+        # Registro 1 (string)
+        assert truncated[0]["prompt"] == "epsilon zeta eta"
+        assert truncated[0]["reference_answer"] == "ref1"
+        assert truncated[0]["expected_cwe"] == "CWE-89"
+
+        # Registro 2 (lista de mensagens)
+        assert truncated[1]["prompt"][-1]["content"] == "p2 p3 p4"
+        assert truncated[1]["reference_answer"] == "ref2"
+        assert truncated[1]["expected_cwe"] == "CWE-79"
+
+    def test_reward_suite_accepts_conversational_and_string_completions(self):
+        """Valida que as 3 funções de recompensa aceitam string pura e formato conversacional list[dict]."""
+        ideal_text = (
+            "<think>\n"
+            "Análise detalhada de superfície e mapeamento de fluxo com sinks identificados.\n"
+            "Detecção de chamadas perigosas e validação de defesas existentes na aplicação.\n"
+            "Conclusão da vulnerabilidade e impacto potencial de execução arbitrária de código.\n"
+            "</think>\n"
+            "FATO: Falha confirmada.\n"
+            "DETECÇÃO: Log de segurança.\n"
+            "SUGESTÃO DE CORREÇÃO:\n"
+            "```python\ndef sanitize(x): return x.strip()\n```"
+        )
+        kwargs = {
+            "expected_mc": ["A"],
+            "expected_choice": ["A"],
+            "reference_answer": ["FATO: Falha confirmada."],
+            "expected_cwe": ["CWE-89"],
+            "expected_mitre": ["T1059"],
+        }
+
+        # Formato 1: lista de strings
+        str_completions = [ideal_text]
+        r1_str = cot_integrity_reward(["p"], str_completions, **kwargs)
+        r2_str = technical_accuracy_reward(["p"], str_completions, **kwargs)
+        r3_str = sandbox_code_reward(["p"], str_completions, **kwargs)
+
+        # Formato 2: lista de listas de mensagens conversacionais (TRL moderno)
+        conv_completions = [[{"role": "assistant", "content": ideal_text}]]
+        r1_conv = cot_integrity_reward(["p"], conv_completions, **kwargs)
+        r2_conv = technical_accuracy_reward(["p"], conv_completions, **kwargs)
+        r3_conv = sandbox_code_reward(["p"], conv_completions, **kwargs)
+
+        assert len(r1_str) == len(r1_conv) == 1
+        assert r1_str[0] == pytest.approx(r1_conv[0], rel=1e-3)
+        assert r2_str[0] == pytest.approx(r2_conv[0], rel=1e-3)
+        assert r3_str[0] == pytest.approx(r3_conv[0], rel=1e-3)
+
+    def test_real_grpo_config_instantiation_with_filtered_kwargs(self, tmp_path):
+        """Valida instanciação de GRPOConfig real instalado no ambiente sem lançar TypeError."""
+        try:
+            from trl import GRPOConfig
+        except ImportError:
+            pytest.skip("TRL não instalado no ambiente local.")
+
+        raw_kwargs = {
+            "output_dir": str(tmp_path / "grpo_config_real_test"),
+            "learning_rate": 5e-6,
+            "beta": 0.02,
+            "per_device_train_batch_size": 8,
+            "gradient_accumulation_steps": 2,
+            "num_generations": 8,
+            "max_prompt_length": 512,
+            "max_completion_length": 256,
+            "num_train_epochs": 1,
+            "seed": 42,
+            "unsupported_synthetic_param_xyz": 999,
+        }
+
+        filtered, dropped = filter_supported_kwargs(GRPOConfig, raw_kwargs)
+        assert "unsupported_synthetic_param_xyz" in dropped
+
+        # Não pode lançar TypeError mesmo que haja argumentos desconhecidos filtrados
+        real_config = GRPOConfig(**filtered)
+        assert real_config.learning_rate == 5e-6
+        assert real_config.num_generations == 8
+
 
 
 
