@@ -31,7 +31,7 @@ except Exception:
     pass
 
 from datasets import load_dataset
-from transformers import AutoTokenizer, AutoConfig
+from transformers import AutoTokenizer, AutoConfig, AutoModelForCausalLM
 
 CHOICE_MAP = {0: "A", 1: "B", 2: "C", 3: "D"}
 
@@ -311,7 +311,6 @@ def main():
 
             import gc
             import torch
-            from transformers import AutoModelForCausalLM
             gguf_dir = os.path.dirname(os.path.abspath(model_to_load))
             gguf_filename = os.path.basename(model_to_load)
 
@@ -486,7 +485,6 @@ def main():
         if not ran_llama_cpp:
             print(f"[3/4] Carregando via Hugging Face AutoModelForCausalLM...")
             import torch
-            from transformers import AutoModelForCausalLM, AutoConfig
             dtype = torch.float16 if model_to_load.endswith(".gguf") else (torch.bfloat16 if (torch.cuda.is_available() and torch.cuda.is_bf16_supported()) else torch.float32)
             device_map = "auto" if torch.cuda.is_available() else "cpu"
             if model_to_load.endswith(".gguf"):
