@@ -814,8 +814,8 @@ DEFAULT_SYSTEM_PROMPT = (
     "Você é o CyberRott, uma IA especialista em segurança ofensiva, defensiva e análise de vulnerabilidades com raciocínio analítico profundo."
 )
 
-GITHUB_RAW_TRAIN = "https://raw.githubusercontent.com/johnknevescarrijo/CyberRott1.0/main/data/cyberrott_final_train.jsonl"
-GITHUB_RAW_ANCHOR = "https://raw.githubusercontent.com/johnknevescarrijo/CyberRott1.0/main/data/dataset_cyber_ready.jsonl"
+GITHUB_RAW_TRAIN = "https://raw.githubusercontent.com/johnknevescarrijo/CyberRott/main/data/cyberrott_final_train.jsonl"
+GITHUB_RAW_ANCHOR = "https://raw.githubusercontent.com/johnknevescarrijo/CyberRott/main/data/dataset_cyber_ready.jsonl"
 
 
 def ensure_dataset_exists(file_path: str, fallback_url: str) -> str:

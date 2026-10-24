@@ -168,7 +168,6 @@ def resolve_model_or_adapter_path(model_name: str, sft_adapter: str = None, base
                     "/content/CyberRott-v1.2-Standalone",
                     "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_2_GRPO",
                     "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott-v1.2-GRPO",
-                    "/content/CyberRott1.0/CyberRott-v1.2-GRPO",
                     "/content/CyberRott/CyberRott-v1.2-GRPO",
                     "/content/exports/CyberRott-v1.2-Standalone",
                     "./CyberRott-Phi4-mini-Standalone",
@@ -216,7 +215,7 @@ def resolve_model_or_adapter_path(model_name: str, sft_adapter: str = None, base
         "/content/drive/MyDrive/CyberRott_Checkpoints/cyberrott_v1_1_sft_lora",
         "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_1_Final",
         sft_adapter,
-        "/content/CyberRott1.0/cyberrott_v1_1_sft_lora",
+        "/content/CyberRott/cyberrott_v1_1_sft_lora",
         "./cyberrott_v1_1_sft_lora",
     ]
     for cand in sft_candidates:

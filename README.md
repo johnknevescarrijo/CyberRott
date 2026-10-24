@@ -275,7 +275,7 @@ Defense-in-Depth Enhancements:
 ## 🗂️ Repository Structure
 
 ```text
-CyberRott1.0/
+CyberRott/
 ├── data/                                 # Datasets and golden anchor specifications
 │   ├── dataset_cyber_ready.jsonl         # 16 High-density Golden Anchors with 7-step CoT
 │   └── cyberrott_final_train.jsonl       # Consolidated training dataset (2,820 samples)
@@ -306,7 +306,7 @@ CyberRott1.0/
 
 ### 1. Cloud Execution via Google Colab Pro (Recommended: GPU L4 24GB or A100 40/80GB)
 
-1. Upload the [`CyberRott_Colab_Training.ipynb`](file:///home/john/Programacao/Estudos/CyberRott1.0/notebooks/CyberRott_Colab_Training.ipynb) notebook to your Google Colab workspace.
+1. Upload the [`CyberRott_Colab_Training.ipynb`](file:///home/john/Programacao/Estudos/CyberRott/notebooks/CyberRott_Colab_Training.ipynb) notebook to your Google Colab workspace.
 2. Under **Runtime** -> **Change runtime type**, select either **L4 GPU** or **A100 GPU**.
 3. Execute the cells sequentially. The automated pipeline manages:
    - GPU capability verification and CUDA toolchain inspection.
