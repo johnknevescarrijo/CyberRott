@@ -4,7 +4,7 @@
 Avaliação Ultrarrápida do WMDP-Cyber com Chain-of-Thought (CoT) usando vLLM / PyTorch.
 Otimizado para GPUs Nvidia L4 (24GB) e A100 no Google Colab.
 Salva automaticamente os relatórios detalhados e resumos comparativos de cada teste.
-Suporta checkpoints standalone, repositórios Hugging Face e fusão automática de LoRA.
+Suporta checkpoints standalone BF16 puros, repositórios Hugging Face e fusão automática de LoRA.
 """
 
 import os
