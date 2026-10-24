@@ -31,6 +31,8 @@ from scripts.train_grpo import (
     resolve_resume_checkpoint,
     sync_checkpoint_to_google_drive,
     get_eos_token_ids,
+    resolve_vllm_kwargs,
+    probe_vllm_server,
 )
 
 
@@ -604,6 +606,124 @@ class TestGoogleDriveCheckpointSync:
         # Verifica compatibilidade de alias com underscore
         alias_path = drive_mount / "CyberRott_Checkpoints" / "CyberRott_v1_3_GRPO"
         assert alias_path.exists()
+
+
+class TestVLLMConfiguration:
+    """Valida a resolução determinística e segura de configurações do motor vLLM em diferentes versões do TRL."""
+
+    class FakeGRPOConfigTRL19:
+        """Simula GRPOConfig do TRL >= 0.18/0.19 com suporte nativo a colocate."""
+        def __init__(
+            self,
+            use_vllm: bool = False,
+            vllm_mode: str = "server",
+            vllm_gpu_memory_utilization: float = 0.45,
+            vllm_server_host: str = "0.0.0.0",
+            vllm_server_port: int = 8000,
+        ):
+            self.use_vllm = use_vllm
+            self.vllm_mode = vllm_mode
+            self.vllm_gpu_memory_utilization = vllm_gpu_memory_utilization
+            self.vllm_server_host = vllm_server_host
+            self.vllm_server_port = vllm_server_port
+
+    class FakeGRPOConfigServerOnly:
+        """Simula GRPOConfig do TRL ~0.16/0.17 com suporte exclusivo a modo servidor externo."""
+        def __init__(
+            self,
+            use_vllm: bool = False,
+            vllm_server_host: str = "0.0.0.0",
+            vllm_server_port: int = 8000,
+            vllm_gpu_memory_utilization: float = 0.45,
+            vllm_device: str = "auto",
+        ):
+            self.use_vllm = use_vllm
+            self.vllm_server_host = vllm_server_host
+            self.vllm_server_port = vllm_server_port
+            self.vllm_gpu_memory_utilization = vllm_gpu_memory_utilization
+            self.vllm_device = vllm_device
+
+    class FakeGRPOConfigLegacy:
+        """Simula GRPOConfig do TRL antigo ~0.14/0.15 que operava com vllm_device."""
+        def __init__(
+            self,
+            use_vllm: bool = False,
+            vllm_device: str = "auto",
+            vllm_gpu_memory_utilization: float = 0.45,
+        ):
+            self.use_vllm = use_vllm
+            self.vllm_device = vllm_device
+            self.vllm_gpu_memory_utilization = vllm_gpu_memory_utilization
+
+    def test_vllm_mode_signature_selects_colocate(self):
+        """(i) Assinatura com vllm_mode -> força colocate e nunca seta vllm_server_host/port."""
+        kwargs = resolve_vllm_kwargs(
+            config_cls=self.FakeGRPOConfigTRL19,
+            use_vllm=True,
+            gpu_mem_util=0.50,
+            vllm_device="cuda:0",
+            server_port=8000,
+            server_host="127.0.0.1",
+        )
+        assert kwargs["use_vllm"] is True
+        assert kwargs["vllm_mode"] == "colocate"
+        assert kwargs["vllm_gpu_memory_utilization"] == 0.50
+        assert "vllm_server_host" not in kwargs, "Host nunca deve ser setado em modo colocate"
+        assert "vllm_server_port" not in kwargs, "Port nunca deve ser setado em modo colocate"
+
+    def test_server_only_without_active_server_falls_back_to_hf_native(self, capsys):
+        """(ii) Assinatura só-servidor sem servidor vLLM ativo -> probe falha e faz fallback para use_vllm=False."""
+        kwargs = resolve_vllm_kwargs(
+            config_cls=self.FakeGRPOConfigServerOnly,
+            use_vllm=True,
+            probe_fn=lambda *args, **kwargs: False,
+        )
+        assert kwargs["use_vllm"] is False
+        assert "vllm_mode" not in kwargs
+        assert "vllm_server_port" not in kwargs
+
+        captured = capsys.readouterr()
+        assert "TRL instalado só suporta vLLM em modo servidor" in captured.out
+        assert "pip install -U 'trl>=0.19'" in captured.out
+        assert "Fazendo fallback para geração nativa HF" in captured.out
+
+    def test_server_only_with_active_server_enables_vllm(self):
+        """Assinatura só-servidor com servidor vLLM ativo -> use_vllm=True e porta configurada."""
+        kwargs = resolve_vllm_kwargs(
+            config_cls=self.FakeGRPOConfigServerOnly,
+            use_vllm=True,
+            server_port=8888,
+            server_host="127.0.0.1",
+            probe_fn=lambda *args, **kwargs: True,
+        )
+        assert kwargs["use_vllm"] is True
+        assert kwargs["vllm_server_port"] == 8888
+        assert kwargs["vllm_server_host"] == "127.0.0.1"
+
+    def test_legacy_device_signature(self):
+        """TRL legado (~0.14/0.15) com vllm_device -> use_vllm=True e vllm_device definido."""
+        kwargs = resolve_vllm_kwargs(
+            config_cls=self.FakeGRPOConfigLegacy,
+            use_vllm=True,
+            gpu_mem_util=0.40,
+            vllm_device="cuda:0",
+        )
+        assert kwargs["use_vllm"] is True
+        assert kwargs["vllm_device"] == "cuda:0"
+        assert kwargs["vllm_gpu_memory_utilization"] == 0.40
+
+    def test_use_vllm_false_returns_disabled(self):
+        """Quando use_vllm=False, kwargs desativa explicitamente o vLLM."""
+        kwargs = resolve_vllm_kwargs(
+            config_cls=self.FakeGRPOConfigTRL19,
+            use_vllm=False,
+        )
+        assert kwargs == {"use_vllm": False}
+
+    def test_probe_vllm_server_offline_port(self):
+        """Probe TCP em porta inativa retorna False com segurança dentro do timeout."""
+        assert probe_vllm_server(port=59123, timeout=0.1) is False
+
 
 
 

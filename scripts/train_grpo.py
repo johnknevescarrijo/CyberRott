@@ -1073,6 +1073,139 @@ def run_dry_run_validation(dataset_records: List[Dict[str, Any]]) -> bool:
 
 
 # ==============================================================================
+# Resolução e Configuração do Motor vLLM (Compatibilidade TRL 0.14 - 0.19+)
+# ==============================================================================
+
+def probe_vllm_server(
+    host: str = "127.0.0.1",
+    port: int = 8000,
+    timeout: float = 2.0,
+    hosts: Tuple[str, ...] = ("127.0.0.1", "0.0.0.0"),
+) -> bool:
+    """Verifica se existe um servidor vLLM externo ativo nos hosts/porta informados.
+
+    Executa probe de socket TCP com timeout configurável (padrão: 2.0s).
+    """
+    import socket
+    candidate_hosts = list(hosts)
+    if host not in candidate_hosts:
+        candidate_hosts.insert(0, host)
+    for h in candidate_hosts:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(timeout)
+                if s.connect_ex((h, port)) == 0:
+                    return True
+        except Exception:
+            pass
+    return False
+
+
+def resolve_vllm_kwargs(
+    config_cls: Any,
+    use_vllm: bool = False,
+    gpu_mem_util: float = 0.45,
+    vllm_device: str = "auto",
+    probe_fn: Optional[Any] = None,
+    server_port: int = 8000,
+    server_host: str = "127.0.0.1",
+) -> Dict[str, Any]:
+    """Resolve os argumentos de configuração vLLM para GRPOConfig garantindo compatibilidade entre versões do TRL.
+
+    Regras de compatibilidade:
+    1. Se `vllm_mode` existir na assinatura de GRPOConfig.__init__ (TRL >= 0.18/0.19):
+       Sempre define vllm_mode="colocate" e vllm_gpu_memory_utilization=gpu_mem_util (nunca seta host/port).
+    2. Se NÃO existir `vllm_mode`, mas existir `vllm_server_host`/`vllm_server_port` (TRL só-servidor, ~0.16/0.17):
+       Executa probe de socket TCP em 127.0.0.1 e 0.0.0.0 na porta configurada (timeout 2s).
+       Se ninguém responder, imprime aviso claro em português e define use_vllm=False com fallback nativo.
+       Garante que nenhum caminho deixe use_vllm=True sem servidor ativo.
+    3. Se existir `vllm_device` (TRL antigo ~0.14/0.15) e não for modo servidor:
+       Mantém comportamento com vllm_device="cuda:0" e vllm_gpu_memory_utilization se suportado.
+    """
+    try:
+        if inspect.isclass(config_cls):
+            sig_params = inspect.signature(config_cls.__init__).parameters
+        else:
+            sig_params = inspect.signature(config_cls).parameters
+    except Exception:
+        sig_params = {}
+
+    if "use_vllm" not in sig_params:
+        return {}
+
+    if not use_vllm:
+        return {"use_vllm": False}
+
+    # 1. TRL com suporte nativo a colocate (TRL >= 0.18 / 0.19+)
+    if "vllm_mode" in sig_params:
+        result: Dict[str, Any] = {
+            "use_vllm": True,
+            "vllm_mode": "colocate",
+        }
+        if "vllm_gpu_memory_utilization" in sig_params:
+            result["vllm_gpu_memory_utilization"] = gpu_mem_util
+        return result
+
+    # 2. TRL em modo exclusivamente client-server (~0.16 / 0.17)
+    # Detectado se possui vllm_server_host ou vllm_server_port e NÃO possui vllm_mode
+    if "vllm_server_host" in sig_params or "vllm_server_port" in sig_params:
+        is_alive = False
+        if probe_fn is not None:
+            try:
+                sig = inspect.signature(probe_fn)
+                p_count = len(sig.parameters)
+                if p_count == 0:
+                    is_alive = bool(probe_fn())
+                elif p_count == 1:
+                    is_alive = bool(probe_fn(server_port))
+                elif p_count == 2:
+                    is_alive = bool(probe_fn(server_port, 2.0))
+                else:
+                    is_alive = bool(probe_fn(server_host, server_port, 2.0))
+            except Exception:
+                try:
+                    is_alive = bool(probe_fn())
+                except Exception:
+                    is_alive = False
+        else:
+            is_alive = probe_vllm_server(host=server_host, port=server_port, timeout=2.0)
+
+        if not is_alive:
+            print(
+                "[!] Aviso: TRL instalado só suporta vLLM em modo servidor; atualize com "
+                "`pip install -U 'trl>=0.19'` para usar colocate. Fazendo fallback para geração nativa HF."
+            )
+            return {"use_vllm": False}
+
+        # Servidor externo detectado ativo
+        result = {"use_vllm": True}
+        if "vllm_server_port" in sig_params:
+            result["vllm_server_port"] = server_port
+        if "vllm_server_host" in sig_params:
+            result["vllm_server_host"] = server_host
+        return result
+
+    # 3. TRL legado (~0.14 / 0.15) que operava via vllm_device local
+    if "vllm_device" in sig_params:
+        resolved_device = "cuda:0"
+        if vllm_device and vllm_device != "auto":
+            resolved_device = vllm_device
+        result = {
+            "use_vllm": True,
+            "vllm_device": resolved_device,
+        }
+        if "vllm_gpu_memory_utilization" in sig_params:
+            result["vllm_gpu_memory_utilization"] = gpu_mem_util
+        return result
+
+    # 4. Fallback genérico caso exista apenas use_vllm
+    result = {"use_vllm": True}
+    if "vllm_gpu_memory_utilization" in sig_params:
+        result["vllm_gpu_memory_utilization"] = gpu_mem_util
+    return result
+
+
+# ==============================================================================
 # Pipeline Principal de Treinamento GRPO
 # ==============================================================================
 
@@ -1287,6 +1420,18 @@ def parse_args():
         default="auto",
         help="Dispositivo para o motor vLLM (padrão: 'auto')."
     )
+    vllm_group.add_argument(
+        "--vllm_server_port",
+        type=int,
+        default=8000,
+        help="Porta do servidor vLLM externo (caso TRL opere em modo servidor; padrão: 8000)."
+    )
+    vllm_group.add_argument(
+        "--vllm_server_host",
+        type=str,
+        default="127.0.0.1",
+        help="Host do servidor vLLM externo (caso TRL opere em modo servidor; padrão: '127.0.0.1')."
+    )
 
     # Flags de Execução
     exec_group = parser.add_argument_group("Execução")
@@ -1342,7 +1487,11 @@ def main():
     from datasets import Dataset
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from peft import LoraConfig, TaskType, PeftModel
+    import trl
     from trl import GRPOTrainer, GRPOConfig
+
+    trl_version = getattr(trl, "__version__", "desconhecida")
+    print(f"[*] Versão do TRL detectada: v{trl_version}")
 
     # Converter registros para HuggingFace Dataset
     hf_dataset = Dataset.from_list(dataset_records)
@@ -1432,7 +1581,33 @@ def main():
             print("[!] Aviso: --use_vllm solicitado, mas o pacote 'vllm' não está instalado no ambiente. Executando rollouts com PyTorch KV-cache nativo.")
             use_vllm = False
         else:
-            print(f"[✓] Engine vLLM ATIVADO para rollouts GRPO (GPU Memory Utilization: {args.vllm_gpu_memory_utilization}, Device: {args.vllm_device}).")
+            print("[✓] Pacote 'vllm' detectado no ambiente Python.")
+
+    # Resolução robusta de parâmetros vLLM ANTES de instanciar GRPOConfig
+    vllm_kwargs = resolve_vllm_kwargs(
+        config_cls=GRPOConfig,
+        use_vllm=use_vllm,
+        gpu_mem_util=args.vllm_gpu_memory_utilization,
+        vllm_device=args.vllm_device,
+        server_port=getattr(args, "vllm_server_port", 8000),
+        server_host=getattr(args, "vllm_server_host", "127.0.0.1"),
+    )
+    use_vllm = vllm_kwargs.get("use_vllm", False)
+
+    # Identificação do modo vLLM escolhido para log
+    sig_params = inspect.signature(GRPOConfig.__init__).parameters
+    if not use_vllm:
+        vllm_mode_desc = "Desativado (geração nativa Hugging Face / PyTorch KV-cache)"
+    elif vllm_kwargs.get("vllm_mode") == "colocate":
+        vllm_mode_desc = f"vLLM colocate in-process (GPU Memory Utilization: {vllm_kwargs.get('vllm_gpu_memory_utilization', args.vllm_gpu_memory_utilization)})"
+    elif "vllm_server_port" in vllm_kwargs or "vllm_server_host" in sig_params:
+        vllm_mode_desc = f"vLLM modo servidor ativo ({getattr(args, 'vllm_server_host', '127.0.0.1')}:{vllm_kwargs.get('vllm_server_port', getattr(args, 'vllm_server_port', 8000))})"
+    elif "vllm_device" in vllm_kwargs:
+        vllm_mode_desc = f"vLLM legado (dispositivo: {vllm_kwargs.get('vllm_device')})"
+    else:
+        vllm_mode_desc = "vLLM ativado"
+
+    print(f"[*] Modo de geração vLLM selecionado: {vllm_mode_desc}")
 
     print(f"[*] Configurando hiperparâmetros GRPO: lr={args.learning_rate}, beta={args.beta}, G={args.num_generations}...")
     grpo_config_kwargs = {
@@ -1458,27 +1633,11 @@ def main():
         "push_to_hub": args.push_to_hub,
         "hub_model_id": args.hub_model_id,
     }
-    if use_gc and "gradient_checkpointing_kwargs" in inspect.signature(GRPOConfig.__init__).parameters:
+    if use_gc and "gradient_checkpointing_kwargs" in sig_params:
         grpo_config_kwargs["gradient_checkpointing_kwargs"] = {"use_reentrant": False}
 
-    sig_params = inspect.signature(GRPOConfig.__init__).parameters
-    if "use_vllm" in sig_params:
-        if use_vllm and "vllm_server_port" in sig_params and "vllm_device" not in sig_params and "vllm_mode" not in sig_params:
-            import socket
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.settimeout(1.0)
-                if s.connect_ex(("127.0.0.1", 8000)) != 0:
-                    print("[*] TRL 0.16+ exige servidor vLLM externo em 127.0.0.1:8000 (não detectado). Usando geração acelerada nativa na A100.")
-                    use_vllm = False
-        grpo_config_kwargs["use_vllm"] = use_vllm
-        if use_vllm:
-            if "vllm_mode" in sig_params:
-                grpo_config_kwargs["vllm_mode"] = "colocate"
-            if "vllm_gpu_memory_utilization" in sig_params:
-                grpo_config_kwargs["vllm_gpu_memory_utilization"] = args.vllm_gpu_memory_utilization
-            if "vllm_device" in sig_params:
-                vllm_dev = "cuda:0" if (args.vllm_device == "auto" and torch.cuda.device_count() <= 1) else args.vllm_device
-                grpo_config_kwargs["vllm_device"] = vllm_dev
+    # Aplicação estrita dos kwargs vLLM resolvidos
+    grpo_config_kwargs.update(vllm_kwargs)
 
     grpo_config = GRPOConfig(**grpo_config_kwargs)
 
