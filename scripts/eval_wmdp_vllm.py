@@ -73,106 +73,147 @@ def resolve_model_or_adapter_path(model_name: str, sft_adapter: str = None, base
     """
     Resolve caminhos de modelo e adaptador SFT procurando localmente, nos caminhos padrão do Google Colab / Drive
     ou diretamente no Hugging Face Hub (com suporte a modelos GGUF).
+    Prioriza modelos BF16 brutos locais ou no Google Drive antes de recorrer ao GGUF quantizado de 4-bits do Hub.
     """
     resolved_model = None
     tokenizer_source = None
     checked_model_paths = []
 
-    is_local_path = (model_name.startswith("./") or model_name.startswith("/")) or os.path.exists(model_name)
+    # 1. Verificação prioritária de checkpoints e modelos BF16 brutos
+    # Mesmo quando model_name for "johnknevescarrijo/CyberRott-v1.2-GRPO", ANTES de baixar o GGUF de 4 bits do Hub,
+    # verifica se existe na máquina ou no Google Drive o modelo ou checkpoint BF16 bruto na ordem estrita:
+    if model_name == "johnknevescarrijo/CyberRott-v1.2-GRPO" or "CyberRott" in model_name or "GRPO" in model_name:
+        bf16_priority_candidates = [
+            # 1. /content/CyberRott-v1.2-BF16-Standalone (se já tiver config.json)
+            ("/content/CyberRott-v1.2-BF16-Standalone", True),
+            # 2. /content/CyberRott-v1.2-Standalone (se já tiver config.json)
+            ("/content/CyberRott-v1.2-Standalone", True),
+            # 3. /content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_2_GRPO
+            ("/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_2_GRPO", False),
+            # 4. /content/drive/MyDrive/CyberRott_Checkpoints/CyberRott-v1.2-GRPO
+            ("/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott-v1.2-GRPO", False),
+            # 5. ./CyberRott-v1.2-GRPO
+            ("./CyberRott-v1.2-GRPO", False),
+        ]
 
-    if not is_local_path:
-        # Repositório Hugging Face Hub (ex: johnknevescarrijo/CyberRott-v1.2-GRPO)
-        print(f"[*] Inspecionando repositório Hugging Face Hub: '{model_name}'...")
-        try:
-            from huggingface_hub import HfApi, hf_hub_download
-            api = HfApi()
-            repo_files = api.list_repo_files(model_name)
+        for cand_path, require_config in bf16_priority_candidates:
+            checked_model_paths.append(cand_path)
+            if not os.path.exists(cand_path):
+                continue
 
-            if "config.json" in repo_files:
-                print(f"[✓] 'config.json' encontrado no repositório Hub. Carregando modelo diretamente.")
-                resolved_model = model_name
-                tokenizer_source = model_name
+            if require_config:
+                if os.path.isdir(cand_path) and os.path.exists(os.path.join(cand_path, "config.json")):
+                    resolved_model = os.path.abspath(cand_path)
+                    tokenizer_source = resolved_model
+                    print(f"[✓] Modelo Standalone BF16 detectado em '{resolved_model}'. Carregando diretamente...")
+                    break
             else:
-                gguf_files = [f for f in repo_files if f.endswith(".gguf")]
-                if gguf_files:
-                    gguf_file = gguf_files[0]
-                    print(f"[*] 'config.json' não encontrado, mas arquivo GGUF detectado no Hub: '{gguf_file}'.")
-                    print(f"[*] Baixando {gguf_file} via Hugging Face Hub...")
-                    local_gguf = hf_hub_download(repo_id=model_name, filename=gguf_file)
-                    print(f"[✓] GGUF baixado com sucesso: {local_gguf}")
-                    resolved_model = local_gguf
-                    tokenizer_source = base_model
-                else:
+                valid_path = find_checkpoint_subdir(cand_path)
+                if valid_path:
+                    resolved_model = valid_path
+                    tokenizer_source = valid_path
+                    print(f"[*] Checkpoint GRPO BF16 detectado em '{valid_path}'! Priorizando fusão BF16 pura (16-bits) em vez do GGUF (4-bits)...")
+                    break
+
+    if not resolved_model:
+        is_local_path = (model_name.startswith("./") or model_name.startswith("/")) or os.path.exists(model_name)
+
+        if not is_local_path:
+            # Repositório Hugging Face Hub (ex: johnknevescarrijo/CyberRott-v1.2-GRPO)
+            print(f"[*] Inspecionando repositório Hugging Face Hub: '{model_name}'...")
+            try:
+                from huggingface_hub import HfApi, hf_hub_download
+                api = HfApi()
+                repo_files = api.list_repo_files(model_name)
+
+                if "config.json" in repo_files:
+                    print(f"[✓] 'config.json' encontrado no repositório Hub. Carregando modelo diretamente.")
                     resolved_model = model_name
                     tokenizer_source = model_name
-        except Exception as e:
-            print(f"[!] Aviso ao inspecionar Hugging Face Hub: {e}. Mantendo '{model_name}'...")
-            resolved_model = model_name
-            tokenizer_source = model_name
-    else:
-        # 1. Se model_name existir localmente
-        checked_model_paths.append(model_name)
-        if os.path.exists(model_name):
-            if os.path.isfile(model_name) and model_name.endswith(".gguf"):
-                resolved_model = os.path.abspath(model_name)
-                tokenizer_source = base_model
-            else:
-                valid_path = find_checkpoint_subdir(model_name)
-                resolved_model = valid_path if valid_path else os.path.abspath(model_name)
-                tokenizer_source = resolved_model
-
-        # 2. Se não existir localmente, busca nos caminhos candidatos conhecidos
-        if not resolved_model:
-            model_candidates = [
-                "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_2_GRPO",
-                "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott-v1.2-GRPO",
-                "/content/CyberRott-v1.2-Standalone",
-                "/content/CyberRott1.0/CyberRott-v1.2-GRPO",
-                "/content/CyberRott/CyberRott-v1.2-GRPO",
-                "/content/exports/CyberRott-v1.2-Standalone",
-                "./CyberRott-Phi4-mini-Standalone",
-                "/content/drive/MyDrive/CyberRott_Checkpoints/cyberrott_v1_1_sft_lora",
-            ]
-            for cand in model_candidates:
-                if cand not in checked_model_paths:
-                    checked_model_paths.append(cand)
-                if os.path.exists(cand):
-                    valid_path = find_checkpoint_subdir(cand)
-                    if valid_path:
-                        resolved_model = valid_path
-                        tokenizer_source = resolved_model
-                        print(f"[*] Checkpoint/Modelo detectado automaticamente em: '{resolved_model}'")
-                        break
-
-        # Se ainda não encontrou e model_name começa com ./ ou /
-        if not resolved_model:
-            if model_name and (model_name.startswith("./") or model_name.startswith("/")):
-                print("\n" + "=" * 70)
-                print(f"❌ [ERRO CRÍTICO] Checkpoint/Modelo local não encontrado para: '{model_name}'")
-                print("=" * 70)
-                print("Caminhos verificados sem sucesso:")
-                for p in checked_model_paths:
-                    print(f"  ✖ {p}")
-                print("\n💡 INSTRUÇÕES PARA O GOOGLE COLAB:")
-                print("1. Se o modelo estiver salvo no seu Google Drive, certifique-se de montar o Drive antes:")
-                print("   from google.colab import drive")
-                print("   drive.mount('/content/drive')")
-                print("2. Verifique se os arquivos de checkpoint estão no Google Drive em:")
-                print("   /content/drive/MyDrive/CyberRott_Checkpoints/")
-                print("3. Se o caminho for diferente, passe o argumento exato:")
-                print("   --model_name /caminho/para/seu/modelo\n")
-                print("=" * 70 + "\n")
-                sys.exit(1)
-            else:
-                # Presume identificador do Hugging Face Hub (ex: microsoft/Phi-4-mini-instruct)
+                else:
+                    gguf_files = [f for f in repo_files if f.endswith(".gguf")]
+                    if gguf_files:
+                        gguf_file = gguf_files[0]
+                        print(f"[*] 'config.json' não encontrado, mas arquivo GGUF detectado no Hub: '{gguf_file}'.")
+                        print(f"[*] Baixando {gguf_file} via Hugging Face Hub...")
+                        local_gguf = hf_hub_download(repo_id=model_name, filename=gguf_file)
+                        print(f"[✓] GGUF baixado com sucesso: {local_gguf}")
+                        resolved_model = local_gguf
+                        tokenizer_source = base_model
+                    else:
+                        resolved_model = model_name
+                        tokenizer_source = model_name
+            except Exception as e:
+                print(f"[!] Aviso ao inspecionar Hugging Face Hub: {e}. Mantendo '{model_name}'...")
                 resolved_model = model_name
                 tokenizer_source = model_name
+        else:
+            # 1. Se model_name existir localmente
+            checked_model_paths.append(model_name)
+            if os.path.exists(model_name):
+                if os.path.isfile(model_name) and model_name.endswith(".gguf"):
+                    resolved_model = os.path.abspath(model_name)
+                    tokenizer_source = base_model
+                else:
+                    valid_path = find_checkpoint_subdir(model_name)
+                    resolved_model = valid_path if valid_path else os.path.abspath(model_name)
+                    tokenizer_source = resolved_model
+
+            # 2. Se não existir localmente, busca nos caminhos candidatos conhecidos
+            if not resolved_model:
+                model_candidates = [
+                    "/content/CyberRott-v1.2-BF16-Standalone",
+                    "/content/CyberRott-v1.2-Standalone",
+                    "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_2_GRPO",
+                    "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott-v1.2-GRPO",
+                    "/content/CyberRott1.0/CyberRott-v1.2-GRPO",
+                    "/content/CyberRott/CyberRott-v1.2-GRPO",
+                    "/content/exports/CyberRott-v1.2-Standalone",
+                    "./CyberRott-Phi4-mini-Standalone",
+                    "/content/drive/MyDrive/CyberRott_Checkpoints/cyberrott_v1_1_sft_lora",
+                ]
+                for cand in model_candidates:
+                    if cand not in checked_model_paths:
+                        checked_model_paths.append(cand)
+                    if os.path.exists(cand):
+                        valid_path = find_checkpoint_subdir(cand)
+                        if valid_path:
+                            resolved_model = valid_path
+                            tokenizer_source = resolved_model
+                            print(f"[*] Checkpoint/Modelo detectado automaticamente em: '{resolved_model}'")
+                            break
+
+            # Se ainda não encontrou e model_name começa com ./ ou /
+            if not resolved_model:
+                if model_name and (model_name.startswith("./") or model_name.startswith("/")):
+                    print("\n" + "=" * 70)
+                    print(f"❌ [ERRO CRÍTICO] Checkpoint/Modelo local não encontrado para: '{model_name}'")
+                    print("=" * 70)
+                    print("Caminhos verificados sem sucesso:")
+                    for p in checked_model_paths:
+                        print(f"  ✖ {p}")
+                    print("\n💡 INSTRUÇÕES PARA O GOOGLE COLAB:")
+                    print("1. Se o modelo estiver salvo no seu Google Drive, certifique-se de montar o Drive antes:")
+                    print("   from google.colab import drive")
+                    print("   drive.mount('/content/drive')")
+                    print("2. Verifique se os arquivos de checkpoint estão no Google Drive em:")
+                    print("   /content/drive/MyDrive/CyberRott_Checkpoints/")
+                    print("3. Se o caminho for diferente, passe o argumento exato:")
+                    print("   --model_name /caminho/para/seu/modelo\n")
+                    print("=" * 70 + "\n")
+                    sys.exit(1)
+                else:
+                    # Presume identificador do Hugging Face Hub (ex: microsoft/Phi-4-mini-instruct)
+                    resolved_model = model_name
+                    tokenizer_source = model_name
 
     # 3. Resolução automática do adaptador SFT
     resolved_sft = None
     sft_candidates = [
-        sft_adapter,
+        sft_adapter if (sft_adapter and sft_adapter != "./cyberrott_v1_1_sft_lora") else None,
         "/content/drive/MyDrive/CyberRott_Checkpoints/cyberrott_v1_1_sft_lora",
+        "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_1_Final",
+        sft_adapter,
         "/content/CyberRott1.0/cyberrott_v1_1_sft_lora",
         "./cyberrott_v1_1_sft_lora",
     ]
@@ -198,6 +239,14 @@ def extract_answer(text: str) -> str:
     )
     if match:
         return match.group(1).upper()
+
+    # 1b. Fallback específico para alternativa colada em texto subsequente maiúsculo (ex: 'Resposta Final: BVocê' ou 'Resposta Final: BResposta')
+    match_attached = re.search(
+        r"(?:Resposta Final|Final Answer|Alternativa Correta|Gabarito)[:\s\*\_\[\(]*([A-D])(?=[A-ZÀ-Ú]|$)",
+        text
+    )
+    if match_attached:
+        return match_attached.group(1).upper()
 
     # 2. Passo intermediário: captura padrões como 'C. ' logo após </think>
     if "</think>" in text:
@@ -277,11 +326,11 @@ def main():
         is_adapter = os.path.exists(os.path.join(model_to_load, "adapter_config.json"))
         has_config = os.path.exists(os.path.join(model_to_load, "config.json"))
         if is_adapter and not has_config:
-            standalone_target = "/content/CyberRott-v1.2-Standalone" if os.path.exists("/content") else "./CyberRott-v1.2-Standalone"
+            standalone_target = "/content/CyberRott-v1.2-BF16-Standalone" if os.path.exists("/content") else "./CyberRott-v1.2-BF16-Standalone"
             standalone_target = os.path.abspath(standalone_target)
             print(f"[*] Detectado adaptador LoRA em '{model_to_load}'. Verificando modelo standalone em '{standalone_target}'...")
             if not os.path.exists(os.path.join(standalone_target, "config.json")):
-                print(f"[*] Standalone não encontrado. Executando fusão automática via merge_lora...")
+                print(f"[*] Standalone não encontrado. Executando fusão automática via merge_lora em bfloat16 puro...")
                 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
                 from scripts.merge_lora import merge_and_save
                 merge_and_save(
@@ -561,9 +610,23 @@ def main():
     ci_95_lower = max(0.0, acc - 1.96 * stderr)
     ci_95_upper = min(1.0, acc + 1.96 * stderr)
 
+    # Determina se está avaliando o modelo BF16 Standalone (puro, 16-bits)
+    is_bf16_standalone = (
+        "BF16" in model_to_load
+        or "CyberRott-v1.2-Standalone" in model_to_load
+        or (not model_to_load.endswith(".gguf") and "safetensors_v2" not in model_to_load and ("CyberRott" in args.model_name or "CyberRott" in model_to_load))
+    )
+
+    if is_bf16_standalone:
+        sanitized_name = "CyberRott-v1_2-GRPO-BF16"
+        model_display_name = "CyberRott-v1.2-GRPO-BF16"
+    else:
+        sanitized_name = args.model_name.replace("/", "_").replace(".", "_")
+        model_display_name = args.model_name
+
     print("\n" + "=" * 70)
     print("📊 RESULTADOS FINAIS - WMDP-CYBER CoT (vLLM):")
-    print(f"Modelo:               {args.model_name}")
+    print(f"Modelo:               {model_display_name}")
     print(f"Total de Questões:    {total}")
     print(f"Respostas Corretas:   {correct}")
     print(f"Falhas de Extração:   {failures}")
@@ -574,12 +637,11 @@ def main():
 
     # 6. Salvar artefatos JSON gravados em disco
     os.makedirs(args.output_dir, exist_ok=True)
-    sanitized_name = args.model_name.replace("/", "_").replace(".", "_")
 
     # Arquivo 1: Resumo compacto (leve, ótimo para compartilhar)
     summary_data = {
         "timestamp": timestamp_str,
-        "model_name": args.model_name,
+        "model_name": model_display_name,
         "benchmark": "wmdp_cyber_cot",
         "total_questions": total,
         "correct": correct,

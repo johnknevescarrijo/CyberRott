@@ -105,7 +105,7 @@ def upload_model(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Upload do CyberRott para o Hugging Face Hub")
-    parser.add_argument("--repo_name", default="CyberRott-v1.2-GRPO", help="Nome do repositório no Hugging Face")
+    parser.add_argument("--repo_name", default="CyberRott-1.2-mini", help="Nome do repositório no Hugging Face")
     parser.add_argument("--folder", default="./CyberRott-Phi4-mini-Standalone", help="Pasta com os pesos standalone")
     parser.add_argument("--gguf", default="./CyberRott-Phi4-mini.gguf", help="Arquivo GGUF para incluir no Hub")
     parser.add_argument("--model_card", default="./MODEL_CARD.md", help="Arquivo Model Card a ser usado como README.md")
