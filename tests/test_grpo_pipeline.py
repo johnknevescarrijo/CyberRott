@@ -29,6 +29,7 @@ from scripts.train_grpo import (
     apply_grpo_compatibility_patches,
     enable_fast_generation_with_kv_cache,
     resolve_resume_checkpoint,
+    sync_checkpoint_to_google_drive,
     get_eos_token_ids,
 )
 
@@ -81,6 +82,9 @@ class TestCotIntegrityReward:
             "<think>pensando</think> I apologize, but as an AI language model I cannot assist.",
             "<think>pensando</think> As an ai assistant, I cannot fulfill this request.",
             "<think>pensando</think> Não posso ajudar com exploração de vulnerabilidades.",
+            "<think>pensando</think> Não é possível determinar a resposta sem software externo.",
+            "<think>pensando</think> Sem as informações ou ferramentas necessárias para responder.",
+            "<think>pensando</think> Cannot determine the correct answer without execution.",
         ]
         for ref in refusal_samples:
             r = cot_integrity_reward(["p"], [ref])
@@ -91,10 +95,35 @@ class TestCotIntegrityReward:
             "Resposta direta sem qualquer bloco de raciocínio prévio.",
             "<think>Iniciou mas nunca fechou a tag de pensamento.",
             "</think>Fechou sem ter aberto antes.",
+            "<think>Pensamento truncado no meio da análise técnica",
         ]
         for b in broken_samples:
             r = cot_integrity_reward(["p"], [b])
-            assert r[0] == 0.0, f"Falha: tags quebradas não zeraram recompensa: {b}"
+            assert r[0] == 0.0, f"Falha: tags quebradas ou truncadas não zeraram recompensa: {b}"
+
+    def test_repetition_loop_detection_gives_zero(self):
+        # Repetição de linha >= 15 chars mais de 4 vezes
+        repeated_line = "Esta é uma linha repetida longa de teste.\n" * 6
+        text_loop_lines = f"<think>\n{repeated_line}\n</think>\nFATO: Teste de loop."
+        r = cot_integrity_reward(["p"], [text_loop_lines])
+        assert r[0] == 0.0, "Falha: repetição severa de linhas não zerou cot reward!"
+
+        # Degeneração de 4-gramas em texto com > 80 palavras
+        text_loop_ngrams = "<think>\n" + ("vulnerabilidade buffer overflow no payload " * 25) + "\n</think>\nFATO: Teste."
+        r2 = cot_integrity_reward(["p"], [text_loop_ngrams])
+        assert r2[0] == 0.0, "Falha: degeneração de 4-gramas não zerou cot reward!"
+
+    def test_mc_indecision_in_cot_gives_zero(self):
+        text_no_choice = (
+            "<think>\n"
+            "Análise da superfície e mapeamento de fluxo com sinks identificados.\n"
+            "Detecção de sinks perigosos e conclusão da vulnerabilidade.\n"
+            "</think>\n"
+            "FATO: Não tenho certeza de qual alternativa escolher."
+        )
+        kwargs = {"expected_mc": ["B"]}
+        r = cot_integrity_reward(["p"], [text_no_choice], **kwargs)
+        assert r[0] == 0.0, "Falha: indecisão em múltipla escolha deve zerar cot reward!"
 
     def test_conversational_list_of_dicts_format(self):
         ideal = (
@@ -188,6 +217,28 @@ class TestSandboxCodeReward:
         r = sandbox_code_reward(["p"], [text])
         assert r[0] == 0.20
 
+    def test_sandbox_code_reward_refusal_gives_zero(self):
+        refusal_samples = [
+            "<think>pensando</think> I apologize, but as an AI I cannot help.",
+            "<think>pensando</think> Não é possível determinar o valor correto.",
+            "<think>pensando</think> Cannot determine the correct answer.",
+        ]
+        for ref in refusal_samples:
+            r = sandbox_code_reward(["p"], [ref])
+            assert r[0] == 0.0, f"Falha: recusa deve zerar sandbox_code_reward: {ref}"
+
+    def test_sandbox_code_reward_truncated_think_gives_zero(self):
+        trunc_text = "<think>Análise técnica iniciada sem fechamento de tag"
+        r = sandbox_code_reward(["p"], [trunc_text])
+        assert r[0] == 0.0, "Falha: think truncado deve zerar sandbox_code_reward!"
+
+    def test_sandbox_code_reward_mc_indecision_gives_zero(self):
+        no_choice_text = "<think>Análise detalhada.</think>FATO: Resposta puramente textual sem declarar alternativa."
+        kwargs = {"expected_mc": ["A"]}
+        r = sandbox_code_reward(["p"], [no_choice_text], **kwargs)
+        assert r[0] == 0.0, "Falha: omissão de resposta em MCQ deve zerar sandbox_code_reward!"
+
+
 
 class TestDatasetCuratorAndDryRun:
     """Testa carregamento de dataset, classificação de verificabilidade e dry-run determinístico."""
@@ -226,17 +277,19 @@ class TestGRPOArgsAndAutoAdjustment:
         try:
             sys.argv = ["train_grpo.py"]
             args = parse_args()
-            assert args.per_device_train_batch_size == 4
-            assert args.gradient_accumulation_steps == 1
-            assert args.num_generations == 4
+            assert args.per_device_train_batch_size == 8
+            assert args.gradient_accumulation_steps == 2
+            assert args.num_generations == 8
             assert args.max_prompt_length == 768
-            assert args.max_completion_length == 512
-            assert args.max_samples == 80
+            assert args.max_completion_length == 1024
+            assert args.max_samples == 800
+            assert args.beta == 0.02
+            assert args.output_dir == "./CyberRott-v1.3-GRPO"
             assert args.save_steps == 20
             assert args.resume_from_checkpoint is None
             assert args.gradient_checkpointing is None
             assert args.use_vllm is False
-            assert args.vllm_gpu_memory_utilization == 0.4
+            assert args.vllm_gpu_memory_utilization == 0.45
         finally:
             sys.argv = sys_argv_backup
 
@@ -509,6 +562,49 @@ class TestFastGenerationWithKVCache:
 
         # 5. Caminho explícito inexistente -> fallback None
         assert resolve_resume_checkpoint(str(run_dir / "checkpoint-999"), str(run_dir)) is None
+
+
+class TestGoogleDriveCheckpointSync:
+    """Testa a verificação e sincronização automática de checkpoint com o Google Drive."""
+
+    def test_sync_skipped_when_drive_not_mounted(self, tmp_path):
+        """Verifica que nada é sincronizado se o Google Drive não estiver montado."""
+        unmounted_drive = str(tmp_path / "content" / "drive" / "MyDrive")
+        source = tmp_path / "CyberRott-v1.3-GRPO"
+        source.mkdir()
+        (source / "adapter_model.safetensors").write_text("dummy")
+
+        result = sync_checkpoint_to_google_drive(
+            source_dir=str(source),
+            target_subfolder="CyberRott-v1.3-GRPO",
+            drive_mount=unmounted_drive
+        )
+        assert result is None
+
+    def test_sync_succeeds_when_drive_mounted(self, tmp_path):
+        """Verifica que copia o checkpoint e cria alias compatível quando o Google Drive está montado."""
+        drive_mount = tmp_path / "content" / "drive" / "MyDrive"
+        drive_mount.mkdir(parents=True)
+
+        source = tmp_path / "CyberRott-v1.3-GRPO"
+        source.mkdir()
+        (source / "adapter_model.safetensors").write_text("model_bytes")
+        (source / "adapter_config.json").write_text('{"base_model": "phi-4"}')
+
+        result = sync_checkpoint_to_google_drive(
+            source_dir=str(source),
+            target_subfolder="CyberRott-v1.3-GRPO",
+            drive_mount=str(drive_mount)
+        )
+        assert result is not None
+        assert os.path.exists(result)
+        assert (drive_mount / "CyberRott_Checkpoints" / "CyberRott-v1.3-GRPO" / "adapter_model.safetensors").exists()
+        assert (drive_mount / "CyberRott_Checkpoints" / "CyberRott-v1.3-GRPO" / "adapter_config.json").exists()
+
+        # Verifica compatibilidade de alias com underscore
+        alias_path = drive_mount / "CyberRott_Checkpoints" / "CyberRott_v1_3_GRPO"
+        assert alias_path.exists()
+
 
 
 

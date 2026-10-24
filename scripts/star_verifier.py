@@ -51,7 +51,26 @@ REFUSAL_PATTERNS = [
     re.compile(r"\bnão posso ajudar com\b", re.IGNORECASE),
     re.compile(r"\bcomo um modelo de linguagem\b", re.IGNORECASE),
     re.compile(r"\bcomo uma inteligência artificial\b", re.IGNORECASE),
+    re.compile(r"não\s+(?:posso|podemos|é\s+possível|consigo|conseguimos)\s+(?:determinar|fornecer\s+o\s+valor|calcular|responder)", re.IGNORECASE),
+    re.compile(r"sem\s+(?:a\s+capacidade\s+de\s+analisar|as\s+informações\s+ou\s+ferramentas|executar\s+o\s+código|software\s+externo)", re.IGNORECASE),
+    re.compile(r"(?:cannot|unable\s+to)\s+determine\s+the\s+(?:correct\s+answer|exact\s+value)", re.IGNORECASE),
 ]
+
+
+def check_refusals(text: str) -> List[str]:
+    """Detecta recusas conversacionais e epistêmicas no texto.
+
+    Retorna lista de frases de recusa encontradas.
+    """
+    if not text or not isinstance(text, str):
+        return []
+    refusals = []
+    for pat in REFUSAL_PATTERNS:
+        matches = pat.findall(text)
+        if matches:
+            matched_phrase = matches[0] if isinstance(matches[0], str) else str(matches[0])
+            refusals.append(matched_phrase)
+    return refusals
 
 # 2. Os 7 Estágios Analíticos do CyberRott para CoT profundo
 CYBERROTT_STAGES = {
@@ -171,13 +190,10 @@ def verify_format_integrity(
     if not candidate or not isinstance(candidate, str):
         return False, ["Candidate vazio ou inválido."], metrics
 
-    # 1. Detecção de recusas conversacionais
-    for pat in REFUSAL_PATTERNS:
-        matches = pat.findall(candidate)
-        if matches:
-            matched_phrase = matches[0] if isinstance(matches[0], str) else str(matches[0])
-            metrics["refusals_detected"].append(matched_phrase)
-            reasons.append(f"Recusa conversacional detectada: '{matched_phrase}'.")
+    # 1. Detecção de recusas conversacionais e epistêmicas
+    metrics["refusals_detected"] = check_refusals(candidate)
+    for matched_phrase in metrics["refusals_detected"]:
+        reasons.append(f"Recusa conversacional detectada: '{matched_phrase}'.")
 
     if metrics["refusals_detected"]:
         return False, reasons, metrics
@@ -591,6 +607,11 @@ class STaRVerifier:
         self.strict_ground_truth = strict_ground_truth
         self.strict_code_syntax = strict_code_syntax
         self.check_inside_think_code = check_inside_think_code
+
+    @staticmethod
+    def check_refusals(text: str) -> List[str]:
+        """Detecta recusas conversacionais e epistêmicas no texto."""
+        return check_refusals(text)
 
     def verify_candidate(
         self,

@@ -1,13 +1,13 @@
 {
   "timestamp": "2026-10-24T00-19-17",
-  "model_name": "johnknevescarrijo/CyberRott-v1.2-GRPO",
+  "model_name": "CyberRott-v1.2-GRPO-Q4-mini",
   "benchmark": "wmdp_cyber_cot",
   "total_questions": 1987,
   "correct": 681,
   "accuracy": 0.3427277302466029,
   "accuracy_percent": "34.27%",
   "stderr": 0.010647517039549931,
-  "stderr_percent": "±1.06%",
+  "stderr_percent": "\u00b11.06%",
   "ci_95": [
     32.19,
     36.36

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Pipeline de Treinamento GRPO (Group Relative Policy Optimization) - CyberRott v1.2
+Pipeline de Treinamento GRPO (Group Relative Policy Optimization) - CyberRott v1.3
 ===================================================================================
 Implementa o motor matemático de aprendizado por reforço online estilo DeepSeek-R1:
 1. Fusão automática em memória do checkpoint SFT LoRA prévio (π_ref com zero VRAM extra).
@@ -190,6 +190,8 @@ try:
         verify_code_syntax,
         extract_mc_answer,
         CHOICE_MAP,
+        check_refusals,
+        STaRVerifier,
     )
 except ImportError:
     from star_verifier import (
@@ -198,7 +200,11 @@ except ImportError:
         verify_code_syntax,
         extract_mc_answer,
         CHOICE_MAP,
+        check_refusals,
+        STaRVerifier,
     )
+
+verifier = STaRVerifier()
 
 
 # ==============================================================================
@@ -426,6 +432,64 @@ def resolve_resume_checkpoint(resume_arg: Optional[str], output_dir: str) -> Opt
         return None
 
 
+def sync_checkpoint_to_google_drive(
+    source_dir: str,
+    target_subfolder: Optional[str] = None,
+    drive_mount: str = "/content/drive/MyDrive"
+) -> Optional[str]:
+    """Verifica se o Google Drive está montado no Colab e sincroniza o checkpoint final.
+
+    Garante que o modelo treinado seja preservado no Google Drive mesmo que a execução
+    do notebook seja interrompida antes das células subsequentes.
+
+    Args:
+        source_dir: Caminho local do checkpoint final (ex: args.output_dir).
+        target_subfolder: Subdiretório de destino (padrão: nome base do source_dir ou 'CyberRott-v1.3-GRPO').
+        drive_mount: Ponto de montagem padrão do Google Drive no Colab.
+
+    Returns:
+        Caminho do diretório de destino no Google Drive ou None caso não esteja montado.
+    """
+    if not os.path.exists(drive_mount):
+        return None
+
+    if not os.path.exists(source_dir):
+        print(f"[!] Diretório de origem '{source_dir}' não encontrado para sincronização no Google Drive.")
+        return None
+
+    if not target_subfolder:
+        base = os.path.basename(os.path.normpath(source_dir))
+        target_subfolder = base if base and base not in (".", "/") else "CyberRott-v1.3-GRPO"
+
+    drive_checkpoints_dir = os.path.join(drive_mount, "CyberRott_Checkpoints")
+    drive_target_dir = os.path.join(drive_checkpoints_dir, target_subfolder)
+
+    print(f"\n[*] Google Drive detectado montado em '{drive_mount}'.")
+    print(f"[*] Sincronizando automaticamente checkpoint final '{source_dir}' -> '{drive_target_dir}'...")
+    try:
+        os.makedirs(drive_checkpoints_dir, exist_ok=True)
+        shutil.copytree(source_dir, drive_target_dir, dirs_exist_ok=True)
+        print(f"[✓] Checkpoint salvo e sincronizado com sucesso no Google Drive: '{drive_target_dir}'!")
+
+        # Aliases com underscore para total compatibilidade retroativa (ex: CyberRott_v1_3_GRPO)
+        for alt_candidate in {
+            target_subfolder.replace("-", "_"),
+            target_subfolder.replace("-", "_").replace(".", "_"),
+        }:
+            drive_target_alt = os.path.join(drive_checkpoints_dir, alt_candidate)
+            if drive_target_alt != drive_target_dir and not os.path.exists(drive_target_alt):
+                try:
+                    os.symlink(drive_target_dir, drive_target_alt)
+                except Exception:
+                    pass
+
+        return drive_target_dir
+    except Exception as e:
+        print(f"[!] Aviso: Falha ao copiar checkpoint para o Google Drive ({drive_target_dir}): {e}")
+        return None
+
+
+
 # ==============================================================================
 # Helper de Extração de Texto de Completions (Compatibilidade com TRL)
 # ==============================================================================
@@ -489,16 +553,82 @@ def get_eos_token_ids(tokenizer: Any) -> List[int]:
 # As 3 Funções de Recompensa Determinísticas Verificáveis (GRPO Reward Suite)
 # ==============================================================================
 
+def check_repetition(text: str) -> bool:
+    """Detecta degeneração em loop ou repetição severa no texto gerado.
+
+    Critérios:
+    1. Uma mesma linha não-vazia de >= 15 caracteres repetida mais de 4 vezes.
+    2. Razão de 4-gramas únicos < 0.35 em textos com mais de 80 palavras.
+    """
+    if not text or not isinstance(text, str):
+        return False
+
+    # 1. Detecção de linhas idênticas repetidas (>= 15 chars, repetida mais de 4 vezes)
+    lines = [line.strip() for line in text.splitlines() if len(line.strip()) >= 15]
+    if lines:
+        from collections import Counter
+        line_counts = Counter(lines)
+        if any(count > 4 for count in line_counts.values()):
+            return True
+
+    # 2. Detecção de repetição de n-gramas em textos longos (> 80 palavras, razão < 0.35)
+    words = text.split()
+    if len(words) > 80:
+        ngrams = [tuple(words[j:j+4]) for j in range(len(words) - 3)]
+        if ngrams:
+            unique_ratio = len(set(ngrams)) / float(len(ngrams))
+            if unique_ratio < 0.35:
+                return True
+
+    return False
+
+
 def cot_integrity_reward(prompts: Any, completions: Any, **kwargs) -> List[float]:
     """
     Função de Recompensa 1: Integridade Estrutural CoT (Peso: 0.30)
-    - Penalidade severa (0.0 imediato) para recusas de IA conversacional ("As an AI...", "I cannot...").
+    - Penalidade severa (0.0 imediato) para recusas de IA conversacional e epistêmica.
+    - Anti-truncamento: se <think> estiver presente mas </think> ausente, zera imediatamente (0.0).
+    - Anti-loop / repetição severa: zera se houver linhas em loop (>4x) ou razão de 4-gramas < 0.35.
+    - Trava Anti-Indecisão em Múltipla Escolha: se expected_mc for válido e modelo não escolher, zera (0.0).
     - Requer tags balanceadas <think>...</think>.
-    - Pontua profundidade do raciocínio, cobertura dos 7 estágios e marcadores estruturais (FATO, DETECÇÃO, CORREÇÃO).
+    - Pontua profundidade do raciocínio, cobertura dos 7 estágios e marcadores estruturais.
     """
     rewards = []
-    for c in completions:
+    expected_mcs = kwargs.get("expected_mc", kwargs.get("expected_choice", []))
+
+    for i, c in enumerate(completions):
         text = extract_text_from_completion(c)
+
+        # 1. Anti-truncamento: se <think> está presente mas </think> NÃO está presente, retorne 0.0 imediatamente
+        if "<think>" in text and "</think>" not in text:
+            rewards.append(0.0)
+            continue
+
+        # Presença mandatória de tags de raciocínio balanceadas
+        if "<think>" not in text or "</think>" not in text:
+            rewards.append(0.0)
+            continue
+
+        think_open_idx = text.find("<think>")
+        think_close_idx = text.find("</think>")
+        if think_close_idx <= think_open_idx:
+            rewards.append(0.0)
+            continue
+
+        # 2. Detecção anti-loop / repetição severa
+        if check_repetition(text):
+            rewards.append(0.0)
+            continue
+
+        # 3. Trava Anti-Indecisão em Múltipla Escolha:
+        # Se a amostra tiver gabarito de múltipla escolha e extract_mc_answer retornar None, zere o score
+        expected_mc_val = expected_mcs[i] if (i < len(expected_mcs) and expected_mcs[i]) else None
+        is_mc = bool(expected_mc_val and str(expected_mc_val).strip() and str(expected_mc_val).strip().upper() in ["A", "B", "C", "D", "0", "1", "2", "3"])
+        if is_mc and extract_mc_answer(text) is None:
+            rewards.append(0.0)
+            continue
+
+        # 4. Formato e ausência de recusas
         fmt_ok, fmt_reasons, fmt_metrics = verify_format_integrity(
             text,
             min_think_chars=80,
@@ -506,17 +636,12 @@ def cot_integrity_reward(prompts: Any, completions: Any, **kwargs) -> List[float
             min_final_chars=20,
         )
 
-        # 1. Penalidade estrita para recusas de alinhamento
+        # Penalidade estrita para recusas de alinhamento
         if fmt_metrics.get("refusals_detected"):
             rewards.append(0.0)
             continue
 
-        # 2. Presença mandatória de tags de raciocínio
-        if "<think>" not in text or "</think>" not in text:
-            rewards.append(0.0)
-            continue
-
-        # 3. Pontuação de integridade CoT [0.0 - 1.0]
+        # 5. Pontuação de integridade CoT [0.0 - 1.0]
         sub_score = 0.0
 
         # Formato base correto (abertura, fechamento ordenado e tamanho mínimo)
@@ -556,7 +681,7 @@ def technical_accuracy_reward(prompts: Any, completions: Any, **kwargs) -> List[
     ref_answers = kwargs.get("reference_answer", [])
     expected_cwes = kwargs.get("expected_cwe", [])
     expected_mitres = kwargs.get("expected_mitre", [])
-    expected_choices = kwargs.get("expected_choice", [])
+    expected_choices = kwargs.get("expected_choice", kwargs.get("expected_mc", []))
 
     for i, c in enumerate(completions):
         text = extract_text_from_completion(c)
@@ -634,15 +759,38 @@ def sandbox_code_reward(prompts: Any, completions: Any, **kwargs) -> List[float]
     - Compilação estática AST Python (ast.parse e compile(..., 'exec') sem execução dinâmica).
     - Gramática estrutural YARA (rule, condition, balanceamento de chaves).
     - Parsing estático YAML para regras Sigma (title, logsource, detection).
+    - Fechamento estrito de brechas: zera (0.0) se houver recusa detectada, truncamento
+      de tags de reflexão ou omissão/indecisão em questões de múltipla escolha.
     """
     rewards = []
-    for c in completions:
+    expected_mcs = kwargs.get("expected_mc", kwargs.get("expected_choice", []))
+
+    for i, c in enumerate(completions):
         text = extract_text_from_completion(c)
+
+        # 1. Fechar brecha de recusa: se o texto tiver recusa detectada, zere imediatamente (0.0)
+        if verifier.check_refusals(text):
+            rewards.append(0.0)
+            continue
+
+        # 2. Fechar brecha de truncamento: se abriu <think> mas não fechou </think>, zere (0.0)
+        if "<think>" in text and "</think>" not in text:
+            rewards.append(0.0)
+            continue
+
+        # 3. Trava Anti-Indecisão em Múltipla Escolha: se expected_mc estiver presente para aquele índice
+        # e extract_mc_answer(text) for None, retorne 0.0
+        expected_mc_val = expected_mcs[i] if (i < len(expected_mcs) and expected_mcs[i]) else None
+        is_mc = bool(expected_mc_val and str(expected_mc_val).strip() and str(expected_mc_val).strip().upper() in ["A", "B", "C", "D", "0", "1", "2", "3"])
+        if is_mc and extract_mc_answer(text) is None:
+            rewards.append(0.0)
+            continue
+
         code_ok, code_reasons, code_metrics = verify_code_syntax(text, check_inside_think=False)
         total_blocks = code_metrics.get("total_code_blocks", 0)
 
         if total_blocks == 0:
-            # Resposta puramente textual conceitual: pontuação neutra
+            # Resposta puramente textual conceitual sem recusa, truncamento ou indecisão: pontuação neutra
             sub_score = 1.0
         else:
             if code_ok:
@@ -809,6 +957,7 @@ def parse_and_curate_dataset(
             "expected_cwe": expected_cwe,
             "expected_mitre": expected_mitre,
             "expected_choice": expected_choice,
+            "expected_mc": expected_choice,
             "_richness": richness_score,
             "_is_anchor": item.get("_is_anchor", False),
         })
@@ -832,6 +981,7 @@ def parse_and_curate_dataset(
             "expected_cwe": r["expected_cwe"],
             "expected_mitre": r["expected_mitre"],
             "expected_choice": r["expected_choice"],
+            "expected_mc": r["expected_mc"],
         })
 
     return final_dataset
@@ -884,6 +1034,7 @@ def run_dry_run_validation(dataset_records: List[Dict[str, Any]]) -> bool:
         "expected_cwe": [test_sample["expected_cwe"]] * 4,
         "expected_mitre": [test_sample["expected_mitre"]] * 4,
         "expected_choice": [test_sample["expected_choice"]] * 4,
+        "expected_mc": [test_sample.get("expected_mc", test_sample["expected_choice"])] * 4,
     }
 
     r_cot = cot_integrity_reward(prompts_batch, completions_batch, **kwargs)
@@ -910,6 +1061,7 @@ def run_dry_run_validation(dataset_records: List[Dict[str, Any]]) -> bool:
 
     # Asserções determinísticas de sanidade
     assert r_cot[1] == 0.0, "Falha: Recusa de alinhamento não zerou cot_integrity_reward!"
+    assert r_box[1] == 0.0, "Falha: Recusa de alinhamento não zerou sandbox_code_reward!"
     assert r_cot[2] == 0.0, "Falha: Ausência de <think> não zerou cot_integrity_reward!"
     assert r_box[3] < 0.20, "Falha: Erro de sintaxe Python não foi penalizado em sandbox_code_reward!"
     assert r_cot[0] > 0.0, "Falha: Candidato ideal deve obter recompensa CoT positiva!"
@@ -926,7 +1078,7 @@ def run_dry_run_validation(dataset_records: List[Dict[str, Any]]) -> bool:
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="CyberRott v1.2 - Treinamento Online GRPO com TRL e PEFT"
+        description="CyberRott v1.3 - Treinamento Online GRPO com TRL e PEFT"
     )
 
     # Argumentos do Modelo e Adaptador
@@ -977,8 +1129,8 @@ def parse_args():
     data_group.add_argument(
         "--max_samples",
         type=int,
-        default=80,
-        help="Quantidade de amostras curadas por densidade técnica (padrão: 80; <=0 usa todas as 4.680)."
+        default=800,
+        help="Quantidade de amostras curadas por densidade técnica (padrão: 800; <=0 usa todas as 4.680)."
     )
     data_group.add_argument(
         "--max_prompt_length",
@@ -989,8 +1141,8 @@ def parse_args():
     data_group.add_argument(
         "--max_completion_length",
         type=int,
-        default=512,
-        help="Tamanho máximo dos rollouts gerados (padrão: 512)."
+        default=1024,
+        help="Tamanho máximo dos rollouts gerados (padrão: 1024)."
     )
 
     # Argumentos GRPO e Treinamento
@@ -998,20 +1150,20 @@ def parse_args():
     grpo_group.add_argument(
         "--output_dir",
         type=str,
-        default="./CyberRott-v1.2-GRPO",
+        default="./CyberRott-v1.3-GRPO",
         help="Diretório de saída para salvar o checkpoint GRPO final."
     )
     grpo_group.add_argument(
         "--num_generations",
         type=int,
-        default=4,
-        help="Número de rollouts gerados por prompt (G) no cálculo de vantagem relativa (padrão: 4)."
+        default=8,
+        help="Número de rollouts gerados por prompt (G) no cálculo de vantagem relativa (padrão: 8)."
     )
     grpo_group.add_argument(
         "--beta",
         type=float,
-        default=0.04,
-        help="Coeficiente de penalidade KL em relação à política de referência π_ref (padrão: 0.04)."
+        default=0.02,
+        help="Coeficiente de penalidade KL em relação à política de referência π_ref (padrão: 0.02)."
     )
     grpo_group.add_argument(
         "--learning_rate",
@@ -1022,14 +1174,14 @@ def parse_args():
     grpo_group.add_argument(
         "--per_device_train_batch_size",
         type=int,
-        default=4,
-        help="Tamanho do micro-batch por dispositivo (padrão: 4, múltiplo obrigatório de num_generations)."
+        default=8,
+        help="Tamanho do micro-batch por dispositivo (padrão: 8, múltiplo obrigatório de num_generations)."
     )
     grpo_group.add_argument(
         "--gradient_accumulation_steps",
         type=int,
-        default=1,
-        help="Passos de acumulação de gradiente (padrão: 1; batch global efetivo = 4)."
+        default=2,
+        help="Passos de acumulação de gradiente (padrão: 2; batch global efetivo = 16)."
     )
     grpo_group.add_argument(
         "--gradient_checkpointing",
@@ -1126,8 +1278,8 @@ def parse_args():
     vllm_group.add_argument(
         "--vllm_gpu_memory_utilization",
         type=float,
-        default=0.4,
-        help="Fração de VRAM alocada para o engine vLLM (padrão: 0.4)."
+        default=0.45,
+        help="Fração de VRAM alocada para o engine vLLM (padrão: 0.45)."
     )
     vllm_group.add_argument(
         "--vllm_device",
@@ -1167,7 +1319,7 @@ def parse_args():
 def main():
     args = parse_args()
     print("=" * 70)
-    print("🚀 CyberRott v1.2 — Pipeline de Treinamento GRPO (DeepSeek-R1 Style)")
+    print("🚀 CyberRott v1.3 — Pipeline de Treinamento GRPO (DeepSeek-R1 Style)")
     print("=" * 70)
 
     # 1. Configurar otimizações de aceleração de hardware
@@ -1370,7 +1522,7 @@ def main():
 
     # 11. Treinamento GRPO
     print("\n" + "=" * 70)
-    print("🔥 INICIANDO TREINAMENTO GRPO ONLINE (CyberRott v1.2)")
+    print("🔥 INICIANDO TREINAMENTO GRPO ONLINE (CyberRott v1.3)")
     print("=" * 70 + "\n")
 
     resume_checkpoint = resolve_resume_checkpoint(args.resume_from_checkpoint, args.output_dir)
@@ -1385,12 +1537,19 @@ def main():
     print(f"[*] Salvando checkpoint final em: {args.output_dir}...")
     trainer.save_model(args.output_dir)
     tokenizer.save_pretrained(args.output_dir)
-    print(f"[✓] Checkpoint CyberRott v1.2 GRPO gravado com sucesso em '{args.output_dir}'!")
+    print(f"[✓] Checkpoint CyberRott v1.3 GRPO gravado com sucesso em '{args.output_dir}'!")
+
+    # 13. Sincronização Automática com Google Drive (Colab)
+    sync_checkpoint_to_google_drive(
+        source_dir=args.output_dir,
+        target_subfolder="CyberRott-v1.3-GRPO"
+    )
 
     if args.push_to_hub:
         print("[*] Publicando modelo no Hugging Face Hub...")
         trainer.push_to_hub()
         print("[✓] Modelo publicado com sucesso!")
+
 
 
 if __name__ == "__main__":

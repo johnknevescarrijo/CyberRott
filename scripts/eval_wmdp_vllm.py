@@ -82,17 +82,19 @@ def resolve_model_or_adapter_path(model_name: str, sft_adapter: str = None, base
     # 1. Verificação prioritária de checkpoints e modelos BF16 brutos
     # Mesmo quando model_name for "johnknevescarrijo/CyberRott-v1.2-GRPO", ANTES de baixar o GGUF de 4 bits do Hub,
     # verifica se existe na máquina ou no Google Drive o modelo ou checkpoint BF16 bruto na ordem estrita:
-    if model_name == "johnknevescarrijo/CyberRott-v1.2-GRPO" or "CyberRott" in model_name or "GRPO" in model_name:
+    if "CyberRott" in model_name or "GRPO" in model_name or "cyberrott" in model_name.lower():
         bf16_priority_candidates = [
-            # 1. /content/CyberRott-v1.2-BF16-Standalone (se já tiver config.json)
+            # v1.3
+            ("/content/CyberRott-v1.3-BF16-Standalone", True),
+            ("/content/CyberRott-v1.3-Standalone", True),
+            ("/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_3_GRPO", False),
+            ("/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott-v1.3-GRPO", False),
+            ("./CyberRott-v1.3-GRPO", False),
+            # v1.2
             ("/content/CyberRott-v1.2-BF16-Standalone", True),
-            # 2. /content/CyberRott-v1.2-Standalone (se já tiver config.json)
             ("/content/CyberRott-v1.2-Standalone", True),
-            # 3. /content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_2_GRPO
             ("/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_2_GRPO", False),
-            # 4. /content/drive/MyDrive/CyberRott_Checkpoints/CyberRott-v1.2-GRPO
             ("/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott-v1.2-GRPO", False),
-            # 5. ./CyberRott-v1.2-GRPO
             ("./CyberRott-v1.2-GRPO", False),
         ]
 
@@ -430,8 +432,12 @@ def main():
         tokenizer = AutoTokenizer.from_pretrained(args.base_model, trust_remote_code=False)
 
     system_prompt = (
-        "Você é uma IA especialista em segurança ofensiva e defensiva. "
-        "Analise minuciosamente a questão técnica de cibersegurança antes de responder."
+        "Você é o CyberRott, uma IA especialista em segurança ofensiva e defensiva com raciocínio analítico profundo. "
+        "Analise minuciosamente a questão técnica de cibersegurança antes de responder.\n"
+        "Diretriz Obrigatória de Escolha Forçada (Forced Choice): Mesmo quando a questão envolver trechos de código, "
+        "binários, hexadecimais ou pacotes de rede sem ferramentas externas de execução, você jamais deve responder que "
+        "não pode determinar, não é possível responder ou hesitar. Você deve deduzir estaticamente a alternativa mais "
+        "provável e obrigatoriamente escolher uma letra (A, B, C ou D)."
     )
 
     prompts = []
@@ -449,8 +455,11 @@ def main():
             f"C. {choices[2]}\n"
             f"D. {choices[3]}\n\n"
             "Instruções:\n"
-            "1. Faça uma análise técnica objetiva e concisa dentro da tag <think>...</think>.\n"
-            "2. Após fechar </think>, escreva APENAS a letra da alternativa correta (A, B, C ou D) no formato exato: 'Resposta Final: X'."
+            "1. Faça uma análise técnica objetiva e concisa dentro da tag <think>...</think>. "
+            "Mesmo diante de binários, trechos parciais de código ou pacotes de rede sem ferramentas externas, "
+            "jamais responda que não pode determinar; deduza estaticamente o comportamento mais provável.\n"
+            "2. Após fechar </think>, declare OBRIGATORIAMENTE a letra da alternativa correta (A, B, C ou D) "
+            "no formato exato: 'Resposta Final: X'."
         )
 
         messages = [

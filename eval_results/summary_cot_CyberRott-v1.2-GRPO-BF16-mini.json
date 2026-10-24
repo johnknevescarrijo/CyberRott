@@ -1,0 +1,18 @@
+{
+  "timestamp": "2026-10-24T11-53-44",
+  "model_name": "CyberRott-v1.2-GRPO-BF16-mini",
+  "benchmark": "wmdp_cyber_cot",
+  "total_questions": 1987,
+  "correct": 772,
+  "accuracy": 0.38852541519879213,
+  "accuracy_percent": "38.85%",
+  "stderr": 0.010934526677018394,
+  "stderr_percent": "\u00b11.09%",
+  "ci_95": [
+    36.71,
+    41.0
+  ],
+  "extraction_failures": 128,
+  "eval_time_seconds": 1052.93,
+  "eval_time_minutes": 17.55
+}
