@@ -257,6 +257,12 @@ def main():
         default="eval_results",
         help="Diretório onde os resultados serão gravados"
     )
+    parser.add_argument(
+        "--drive_backup_dir",
+        type=str,
+        default="/content/drive/MyDrive/CyberRott_Checkpoints/eval_results",
+        help="Diretório de backup persistente no Google Drive (se montado)"
+    )
     args, _ = parser.parse_known_args()
 
     start_time = time.time()
@@ -623,6 +629,24 @@ def main():
     print(f"  📁 Resumo leve:     {summary_file}")
     print(f"  📁 Detalhado:       {full_file}")
     print(f"  📁 Histórico geral: {history_file}")
+
+    # Arquivos com nomes fixos para facilitar download automático
+    latest_summary_file = os.path.join(args.output_dir, "latest_summary.json")
+    latest_full_file = os.path.join(args.output_dir, "latest_full_results.json")
+    shutil.copy2(summary_file, latest_summary_file)
+    shutil.copy2(full_file, latest_full_file)
+    print(f"  📁 Alias recente:   {latest_summary_file}")
+    print(f"  📁 Alias detalhado: {latest_full_file}")
+
+    # Backup automático no Google Drive se montado no Colab
+    if os.path.exists("/content/drive/MyDrive"):
+        os.makedirs(args.drive_backup_dir, exist_ok=True)
+        shutil.copy2(summary_file, args.drive_backup_dir)
+        shutil.copy2(full_file, args.drive_backup_dir)
+        shutil.copy2(history_file, args.drive_backup_dir)
+        shutil.copy2(latest_summary_file, args.drive_backup_dir)
+        shutil.copy2(latest_full_file, args.drive_backup_dir)
+        print(f"☁️ Backup automático concluído no Google Drive: {args.drive_backup_dir}")
 
     print("\n" + "=" * 70)
     print("📋 COPIE E COLE AQUI ESTE RESUMO PARA ME ENVIAR:")
