@@ -21,6 +21,8 @@ import re
 import json
 import time
 import argparse
+import gc
+import torch
 from datetime import datetime
 
 # Desativa verificação do torchao para compatibilidade no Google Colab
@@ -313,6 +315,18 @@ def main():
         default="/content/drive/MyDrive/CyberRott_Checkpoints/eval_results",
         help="Diretório de backup persistente no Google Drive (se montado)"
     )
+    parser.add_argument(
+        "--gpu_memory_utilization",
+        type=float,
+        default=0.80,
+        help="Fração máxima de VRAM alocada para o engine vLLM (default: 0.80)"
+    )
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=32,
+        help="Tamanho do lote para inferência Hugging Face fallback (default: 32)"
+    )
     args, _ = parser.parse_known_args()
 
     start_time = time.time()
@@ -341,6 +355,10 @@ def main():
                     torch_dtype="bfloat16",
                     sft_adapter_path=resolved_sft
                 )
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
             model_to_load = standalone_target
             tokenizer_source = standalone_target
 
@@ -481,14 +499,27 @@ def main():
 
     if use_vllm:
         try:
-            print(f"[3/4] Inicializando vLLM Engine com bfloat16 na GPU...")
+            # Cálculo Dinâmico Seguro de VRAM para o vLLM
+            effective_util = args.gpu_memory_utilization
+            if torch.cuda.is_available():
+                try:
+                    free_bytes, total_bytes = torch.cuda.mem_get_info()
+                    free_ratio = free_bytes / total_bytes
+                    safe_ratio = round(max(0.35, free_ratio - 0.08), 2)
+                    effective_util = min(args.gpu_memory_utilization, safe_ratio)
+                    print(f"[*] VRAM detectada: {free_bytes / (1024**3):.2f} GB livres de {total_bytes / (1024**3):.2f} GB ({free_ratio*100:.1f}%).")
+                    print(f"[*] gpu_memory_utilization ajustado dinamicamente para: {effective_util} (máx solicitado: {args.gpu_memory_utilization})")
+                except Exception as mem_err:
+                    print(f"[!] Não foi possível calcular VRAM livre dinamicamente ({mem_err}). Mantendo {effective_util}...")
+
+            print(f"[3/4] Inicializando vLLM Engine com bfloat16 na GPU (gpu_memory_utilization={effective_util})...")
             llm = LLM(
                 model=model_to_load,
                 tokenizer=tokenizer_source,
                 trust_remote_code=False,
                 dtype="bfloat16",
                 max_model_len=4096,
-                gpu_memory_utilization=0.90
+                gpu_memory_utilization=effective_util
             )
 
             sampling_params = SamplingParams(
@@ -504,8 +535,6 @@ def main():
         except Exception as vllm_err:
             print(f"[!] Aviso vLLM: {vllm_err}. Acionando fallback automático...")
             try:
-                import gc
-                import torch
                 if "llm" in locals():
                     del llm
                 gc.collect()
@@ -547,9 +576,17 @@ def main():
 
         if not ran_llama_cpp:
             print(f"[3/4] Carregando via Hugging Face AutoModelForCausalLM...")
-            import torch
             dtype = torch.float16 if model_to_load.endswith(".gguf") else (torch.bfloat16 if (torch.cuda.is_available() and torch.cuda.is_bf16_supported()) else torch.float32)
             device_map = "auto" if torch.cuda.is_available() else "cpu"
+
+            hf_kwargs = {
+                "torch_dtype": dtype,
+                "device_map": device_map,
+                "trust_remote_code": False,
+            }
+            if not model_to_load.endswith(".gguf"):
+                hf_kwargs["attn_implementation"] = "sdpa"
+
             if model_to_load.endswith(".gguf"):
                 try:
                     model_config = AutoConfig.from_pretrained(tokenizer_source, trust_remote_code=False)
@@ -559,33 +596,73 @@ def main():
                     os.path.dirname(os.path.abspath(model_to_load)),
                     gguf_file=os.path.basename(model_to_load),
                     config=model_config,
-                    torch_dtype=dtype,
-                    device_map=device_map,
-                    trust_remote_code=False
+                    **hf_kwargs
                 )
             else:
-                hf_model = AutoModelForCausalLM.from_pretrained(
-                    model_to_load,
-                    torch_dtype=dtype,
-                    device_map=device_map,
-                    trust_remote_code=False
-                )
-            hf_model.eval()
-            print(f"[4/4] Executando inferência sequencial para {len(prompts)} questões...")
-            generated_texts = []
-            for idx, p in enumerate(prompts):
-                inp = tokenizer(p, return_tensors="pt").to(hf_model.device)
-                with torch.no_grad():
-                    out = hf_model.generate(
-                        **inp,
-                        max_new_tokens=args.max_tokens,
-                        do_sample=False,
-                        pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id
+                try:
+                    hf_model = AutoModelForCausalLM.from_pretrained(
+                        model_to_load,
+                        **hf_kwargs
                     )
-                gen = tokenizer.decode(out[0][inp["input_ids"].shape[1]:], skip_special_tokens=True).strip()
-                generated_texts.append(gen)
-                if (idx + 1) % 10 == 0 or (idx + 1) == len(prompts):
-                    print(f"  [*] Progresso: {idx + 1}/{len(prompts)} questões concluídas...")
+                except Exception as sdpa_err:
+                    print(f"   [!] Aviso ao carregar com attn_implementation='sdpa' ({sdpa_err}). Tentando sem SDPA...")
+                    hf_kwargs.pop("attn_implementation", None)
+                    hf_model = AutoModelForCausalLM.from_pretrained(
+                        model_to_load,
+                        **hf_kwargs
+                    )
+
+            hf_model.eval()
+
+            # Configurações de padding para inferência causal em lote (left padding obrigatório)
+            tokenizer.padding_side = "left"
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
+
+            curr_batch_size = max(1, args.batch_size)
+            print(f"[4/4] Executando inferência acelerada em lotes (batch_size={curr_batch_size}) para {len(prompts)} questões...")
+            generated_texts = []
+            idx = 0
+            while idx < len(prompts):
+                batch_prompts = prompts[idx : idx + curr_batch_size]
+                try:
+                    inputs = tokenizer(
+                        batch_prompts,
+                        return_tensors="pt",
+                        padding=True,
+                        truncation=True
+                    ).to(hf_model.device)
+
+                    with torch.no_grad():
+                        outputs = hf_model.generate(
+                            **inputs,
+                            max_new_tokens=args.max_tokens,
+                            do_sample=False,
+                            use_cache=True,
+                            pad_token_id=tokenizer.pad_token_id
+                        )
+
+                    input_len = inputs["input_ids"].shape[1]
+                    for out_seq in outputs:
+                        gen_seq = out_seq[input_len:]
+                        gen = tokenizer.decode(gen_seq, skip_special_tokens=True).strip()
+                        generated_texts.append(gen)
+
+                    idx += len(batch_prompts)
+                    if idx % 10 == 0 or idx >= len(prompts):
+                        print(f"  [*] Progresso: {min(idx, len(prompts))}/{len(prompts)} questões concluídas...")
+
+                except (torch.cuda.OutOfMemoryError, RuntimeError) as batch_err:
+                    is_oom = isinstance(batch_err, torch.cuda.OutOfMemoryError) or ("out of memory" in str(batch_err).lower())
+                    if is_oom and curr_batch_size > 1:
+                        new_batch = max(1, curr_batch_size // 2)
+                        print(f"  [!] Alerta de VRAM OOM com batch_size={curr_batch_size}. Reduzindo para {new_batch} e limpando cache...")
+                        curr_batch_size = new_batch
+                        gc.collect()
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                    else:
+                        raise batch_err
 
     total_eval_time = time.time() - start_time
 

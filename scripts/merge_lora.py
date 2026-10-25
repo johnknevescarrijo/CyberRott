@@ -7,6 +7,7 @@ os.environ["USE_TORCH"] = "1"
 sys.modules["tensorflow"] = None
 
 import argparse
+import gc
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -97,6 +98,16 @@ def merge_and_save(
     print(f"5. Salvando modelo completo standalone em: {output_path}...")
     merged_model.save_pretrained(output_path, safe_serialization=True)
     tokenizer.save_pretrained(output_path)
+
+    # Desalocação explícita de memória para liberar VRAM imediatamente
+    del merged_model, final_lora_model, base_model
+    if "sft_model" in locals():
+        del sft_model
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+
     print("=" * 60)
     print("Sucesso! Modelo CyberRott Standalone salvo e pronto para exportação (GGUF / Ollama / vLLM).")
     print("=" * 60)
