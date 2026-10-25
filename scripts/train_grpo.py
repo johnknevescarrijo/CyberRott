@@ -15,6 +15,8 @@ Implementa o motor matemático de aprendizado por reforço online estilo DeepSee
 """
 
 import os
+# Configuração precoce do alocador de memória CUDA para mitigar fragmentação de VRAM (expandable_segments)
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 import sys
 import gc
 import re
@@ -1114,7 +1116,7 @@ def probe_vllm_server(
 def resolve_vllm_kwargs(
     config_cls: Any,
     use_vllm: bool = False,
-    gpu_mem_util: float = 0.45,
+    gpu_mem_util: float = 0.30,
     vllm_device: str = "auto",
     probe_fn: Optional[Any] = None,
     server_port: int = 8000,
@@ -1462,21 +1464,21 @@ def parse_args():
     grpo_group.add_argument(
         "--per_device_train_batch_size",
         type=int,
-        default=8,
-        help="Tamanho do micro-batch por dispositivo (padrão: 8, múltiplo obrigatório de num_generations)."
+        default=2,
+        help="Tamanho do micro-batch por dispositivo no forward/backward (padrão: 2; reduz drasticamente VRAM de ativações)."
     )
     grpo_group.add_argument(
         "--gradient_accumulation_steps",
         type=int,
-        default=2,
-        help="Passos de acumulação de gradiente (padrão: 2; batch global efetivo = 16)."
+        default=8,
+        help="Passos de acumulação de gradiente (padrão: 8; micro_batch=2 * 8 = batch efetivo 16 divisível por G=8)."
     )
     grpo_group.add_argument(
         "--gradient_checkpointing",
         dest="gradient_checkpointing",
         action="store_true",
         default=None,
-        help="Habilita gradient checkpointing (padrão: auto; True para VRAM < 35GB, False para A100 >= 35GB)."
+        help="Habilita gradient checkpointing (padrão: True em todas as GPUs para evitar OOM com Phi-4-mini 200k vocab)."
     )
     grpo_group.add_argument(
         "--no_gradient_checkpointing",
@@ -1566,8 +1568,8 @@ def parse_args():
     vllm_group.add_argument(
         "--vllm_gpu_memory_utilization",
         type=float,
-        default=0.45,
-        help="Fração de VRAM alocada para o engine vLLM (padrão: 0.45)."
+        default=0.30,
+        help="Fração de VRAM alocada para o engine vLLM (padrão: 0.30; liberando VRAM para o backprop das 32 camadas)."
     )
     vllm_group.add_argument(
         "--vllm_device",
@@ -1704,26 +1706,72 @@ def main():
     )
 
     # 9. Configuração do GRPOConfig (TRL)
-    if args.per_device_train_batch_size < args.num_generations or (args.per_device_train_batch_size % args.num_generations != 0):
-        print(
-            f"[*] Auto-ajuste TRL GRPO: per_device_train_batch_size ({args.per_device_train_batch_size}) "
-            f"ajustado para {args.num_generations} (múltiplo obrigatório de num_generations={args.num_generations})."
-        )
-        args.per_device_train_batch_size = args.num_generations
+    # Identificação antecipada de campos suportados por GRPOConfig
+    supported_grpo_fields = set()
+    if dataclasses.is_dataclass(GRPOConfig):
+        supported_grpo_fields.update(f.name for f in dataclasses.fields(GRPOConfig))
+    try:
+        supported_grpo_fields.update(p for p in inspect.signature(GRPOConfig.__init__).parameters if p != "self")
+    except Exception:
+        pass
+
+    has_modern_grpo_batching = (
+        "generation_batch_size" in supported_grpo_fields
+        or "steps_per_generation" in supported_grpo_fields
+    )
+
+    if has_modern_grpo_batching:
+        # TRL Moderno: Suporta desacoplamento entre geração (G rollouts por prompt) e micro-batch de treino.
+        # Não forçamos per_device_train_batch_size = num_generations, economizando muita VRAM no backward pass.
+        # Apenas exigimos que o batch efetivo (per_device_train_batch_size * gradient_accumulation_steps) seja múltiplo de num_generations.
+        effective_gen_batch = args.per_device_train_batch_size * args.gradient_accumulation_steps
+        if effective_gen_batch % args.num_generations != 0:
+            target_batch = ((effective_gen_batch + args.num_generations - 1) // args.num_generations) * args.num_generations
+            new_gas = (target_batch + args.per_device_train_batch_size - 1) // args.per_device_train_batch_size
+            while (args.per_device_train_batch_size * new_gas) % args.num_generations != 0:
+                new_gas += 1
+            print(
+                f"[*] Auto-ajuste TRL GRPO moderno: gradient_accumulation_steps ajustado de "
+                f"{args.gradient_accumulation_steps} para {new_gas} para garantir que o batch efetivo "
+                f"({args.per_device_train_batch_size * new_gas}) seja múltiplo de num_generations={args.num_generations}."
+            )
+            args.gradient_accumulation_steps = new_gas
+    else:
+        # TRL Legado: Exige estritamente per_device_train_batch_size múltiplo de num_generations
+        if args.per_device_train_batch_size < args.num_generations or (args.per_device_train_batch_size % args.num_generations != 0):
+            print(
+                f"[*] Auto-ajuste TRL GRPO (legado): per_device_train_batch_size ({args.per_device_train_batch_size}) "
+                f"ajustado para {args.num_generations} (múltiplo obrigatório de num_generations={args.num_generations})."
+            )
+            args.per_device_train_batch_size = args.num_generations
 
     # Decisão de Gradient Checkpointing:
     # Se especificado via CLI, respeita a escolha do usuário.
-    # Caso contrário: False se VRAM >= 35GB (A100), True para GPUs < 35GB (L4, T4, etc.)
+    # Caso contrário: SEMPRE use_gc = True por padrão (mesmo em A100 40GB).
+    # Racional: No GRPO + vLLM colocate com vocabulário de 200k do Phi-4-mini e 32 camadas,
+    # as ativações ocupam dezenas de GiBs no backward pass sem checkpointing, levando a OOM.
+    # Graças ao enable_fast_generation_with_kv_cache, gradient checkpointing não afeta
+    # a velocidade dos rollouts (mantém complexidade O(N)).
     if args.gradient_checkpointing is not None:
         use_gc = bool(args.gradient_checkpointing)
         print(f"[*] Gradient Checkpointing explicitamente definido pelo usuário: {use_gc}")
     else:
-        if hw_info.get("is_high_vram", False):
-            use_gc = False
-            print("[Auto-Otimização A100] VRAM >= 35GB detectada: Gradient Checkpointing DESATIVADO para aceleração máxima (use_cache nativo permanente).")
-        else:
-            use_gc = True
-            print("[*] VRAM < 35GB detectada: Gradient Checkpointing ATIVADO para segurança de memória.")
+        use_gc = True
+        print(
+            "[*] Gradient Checkpointing ATIVADO por padrão (essencial no GRPO com Phi-4-mini 200k vocab "
+            "e 32 camadas para evitar OOM em ativações; rollouts mantêm aceleração KV-cache via wrapper)."
+        )
+
+    # Harmonização do modelo base com Gradient Checkpointing
+    if use_gc:
+        if hasattr(base_model, "gradient_checkpointing_enable"):
+            try:
+                base_model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+            except TypeError:
+                base_model.gradient_checkpointing_enable()
+            print("[✓] Gradient Checkpointing habilitado no modelo base (use_reentrant=False).")
+        if hasattr(base_model.config, "use_cache"):
+            base_model.config.use_cache = False
 
     # Verificação e integração do motor vLLM
     use_vllm = args.use_vllm
@@ -1791,21 +1839,16 @@ def main():
     # Aplicação estrita dos kwargs vLLM resolvidos
     grpo_config_kwargs.update(vllm_kwargs)
 
-    # Identificação de campos suportados por GRPOConfig
-    supported_grpo_fields = set()
-    if dataclasses.is_dataclass(GRPOConfig):
-        supported_grpo_fields.update(f.name for f in dataclasses.fields(GRPOConfig))
-    try:
-        supported_grpo_fields.update(p for p in inspect.signature(GRPOConfig.__init__).parameters if p != "self")
-    except Exception:
-        pass
-
-    # Se a versão nova do TRL tiver generation_batch_size/steps_per_generation:
+    # Se a versão nova do TRL tiver generation_batch_size:
     # Garante divisibilidade de (per_device_train_batch_size * gradient_accumulation_steps) por num_generations
     effective_gen_batch = args.per_device_train_batch_size * args.gradient_accumulation_steps
     if "generation_batch_size" in supported_grpo_fields:
         grpo_config_kwargs["generation_batch_size"] = effective_gen_batch
         print(f"[*] TRL moderno: generation_batch_size configurado como {effective_gen_batch} (divisível por G={args.num_generations}).")
+
+    if "torch_empty_cache_steps" in supported_grpo_fields:
+        grpo_config_kwargs["torch_empty_cache_steps"] = 1
+        print("[*] TRL GRPO: torch_empty_cache_steps=1 configurado para prevenção contínua de fragmentação de VRAM.")
 
     # Filtra os kwargs suportados pelo GRPOConfig da versão instalada do TRL
     filtered_config_kwargs, dropped_config_kwargs = filter_supported_kwargs(GRPOConfig, grpo_config_kwargs)
@@ -1880,6 +1923,12 @@ def main():
     print("\n" + "=" * 70)
     print("🔥 INICIANDO TREINAMENTO GRPO ONLINE (CyberRott v1.3)")
     print("=" * 70 + "\n")
+
+    # Limpeza preventiva de cache CUDA antes de iniciar o treinamento
+    print("[*] Executando coleta de lixo e esvaziamento de cache CUDA antes do treinamento...")
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     resume_checkpoint = resolve_resume_checkpoint(args.resume_from_checkpoint, args.output_dir)
     train_result = trainer.train(resume_from_checkpoint=resume_checkpoint)
