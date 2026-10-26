@@ -35,7 +35,7 @@ datasets:
 - cais/wmdp
 pipeline_tag: text-generation
 model-index:
-- name: CyberRott-v1.3-mini
+- name: CyberRott-v1.3-GRPO
   results:
   - task:
       type: text-generation
@@ -198,7 +198,7 @@ graph TD
 Run CyberRott v1.3 locally with a single terminal command:
 
 ```bash
-ollama run hf.co/johnknevescarrijo/CyberRott-v1.3-mini
+ollama run hf.co/johnknevescarrijo/CyberRott-v1.3-GRPO
 ```
 
 ### 2. Execution via Hugging Face `transformers` (Python)
@@ -207,7 +207,7 @@ ollama run hf.co/johnknevescarrijo/CyberRott-v1.3-mini
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-model_id = "johnknevescarrijo/CyberRott-v1.3-mini"
+model_id = "johnknevescarrijo/CyberRott-v1.3-GRPO"
 
 tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
 model = AutoModelForCausalLM.from_pretrained(
@@ -254,7 +254,7 @@ print(response)
 Serve CyberRott v1.3 with continuous batching and PagedAttention:
 
 ```bash
-vllm serve johnknevescarrijo/CyberRott-v1.3-mini \
+vllm serve johnknevescarrijo/CyberRott-v1.3-GRPO \
     --dtype bfloat16 \
     --max-model-len 2048 \
     --gpu-memory-utilization 0.90 \
@@ -331,6 +331,6 @@ CyberRott v1.3 is created exclusively for defensive cyber operations, vulnerabil
   title = {CyberRott v1.3: Reasoning-Driven Cybersecurity Small Language Model with Group Relative Policy Optimization},
   year = {2026},
   publisher = {Hugging Face Hub},
-  howpublished = {\url{https://huggingface.co/johnknevescarrijo/CyberRott-v1.3-mini}}
+  howpublished = {\url{https://huggingface.co/johnknevescarrijo/CyberRott-v1.3-GRPO}}
 }
 ```

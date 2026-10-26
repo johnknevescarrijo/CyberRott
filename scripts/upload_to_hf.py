@@ -15,7 +15,7 @@ import argparse
 from typing import Optional, List
 from huggingface_hub import HfApi, create_repo, get_token
 
-DEFAULT_REPO_NAME = "CyberRott-v1.3-mini"
+DEFAULT_REPO_NAME = "CyberRott-v1.3-GRPO"
 
 CANDIDATE_FOLDERS: List[str] = [
     "/content/CyberRott-v1.3-BF16-Standalone",
@@ -27,8 +27,8 @@ CANDIDATE_FOLDERS: List[str] = [
 ]
 
 CANDIDATE_GGUFS: List[str] = [
-    "./CyberRott-v1.3-mini.gguf",
-    "/content/CyberRott-v1.3-mini.gguf",
+    "./CyberRott-v1.3-GRPO.gguf",
+    "/content/CyberRott-v1.3-GRPO.gguf",
     "./CyberRott-v1.2-mini.gguf",
     "/content/CyberRott-v1.2-mini.gguf",
     "./CyberRott-Phi4-mini.gguf"
@@ -221,7 +221,7 @@ def upload_model(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Upload do CyberRott v1.3 para o Hugging Face Hub")
-    parser.add_argument("--repo_name", default=DEFAULT_REPO_NAME, help="Nome do repositório no Hugging Face (default: CyberRott-v1.3-mini)")
+    parser.add_argument("--repo_name", default=DEFAULT_REPO_NAME, help="Nome do repositório no Hugging Face (default: CyberRott-v1.3-GRPO)")
     parser.add_argument("--folder", default=None, help="Pasta com os pesos standalone (auto-resolvida se omitida)")
     parser.add_argument("--gguf", default=None, help="Arquivo GGUF para incluir no Hub (opcional)")
     parser.add_argument("--model_card", default="./MODEL_CARD.md", help="Arquivo Model Card a ser usado como README.md")
