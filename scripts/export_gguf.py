@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Pipeline de Exportação e Quantização GGUF para CyberRott 1.2
+Pipeline de Exportação e Quantização GGUF para CyberRott 1.3
 ============================================================
 Automatiza o fluxo completo pós-treinamento para deploy local no Ollama / llama.cpp:
 1. Fusão Sequencial de Adaptadores (Base Model + SFT LoRA + GRPO RL -> Standalone).
@@ -13,7 +13,7 @@ Automatiza o fluxo completo pós-treinamento para deploy local no Ollama / llama
 Exemplo de uso:
     python scripts/export_gguf.py \
         --sft_adapter /content/drive/MyDrive/CyberRott_Checkpoints/cyberrott_v1_1_sft_lora \
-        --grpo_adapter /content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_2_GRPO \
+        --grpo_adapter /content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_3_GRPO \
         --quant_type Q4_K_M \
         --output_dir ./exports
 """
@@ -57,12 +57,12 @@ def export_pipeline(
     quant_type: str,
     output_dir: str,
     torch_dtype: str = "bfloat16",
-    ollama_model_name: str = "cyberrott-v1.2",
+    ollama_model_name: str = "cyberrott-v1.3",
     skip_merge: bool = False,
     standalone_path: str = None,
 ):
     print("=" * 70)
-    print("🛡️  CyberRott v1.2 — Pipeline Automatizado de Exportação & Quantização GGUF")
+    print("🛡️  CyberRott v1.3 — Pipeline Automatizado de Exportação & Quantização GGUF")
     print("=" * 70)
     print(f"Modelo Base:      {base_model}")
     print(f"Adaptador SFT:    {sft_adapter or 'Nenhum'}")
@@ -72,9 +72,9 @@ def export_pipeline(
     print("=" * 70)
 
     os.makedirs(output_dir, exist_ok=True)
-    standalone_dir = standalone_path or os.path.join(output_dir, "CyberRott-v1.2-Standalone")
-    f16_gguf_path = os.path.join(output_dir, "cyberrott-v1.2-f16.gguf")
-    quant_gguf_path = os.path.join(output_dir, f"cyberrott-v1.2-{quant_type.lower()}.gguf")
+    standalone_dir = standalone_path or os.path.join(output_dir, "CyberRott-v1.3-Standalone")
+    f16_gguf_path = os.path.join(output_dir, "cyberrott-v1.3-f16.gguf")
+    quant_gguf_path = os.path.join(output_dir, f"cyberrott-v1.3-{quant_type.lower()}.gguf")
     modelfile_path = os.path.join(output_dir, "Modelfile")
     llama_cpp_dir = os.path.join(output_dir, "llama.cpp")
 
@@ -203,7 +203,7 @@ PARAMETER stop "<|endoftext|>"
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Pipeline automatizado de Fusão LoRA + Conversão GGUF + Quantização para CyberRott 1.2"
+        description="Pipeline automatizado de Fusão LoRA + Conversão GGUF + Quantização para CyberRott 1.3"
     )
     parser.add_argument(
         "--base_model",
@@ -247,8 +247,8 @@ def parse_args():
     parser.add_argument(
         "--ollama_model_name",
         type=str,
-        default="cyberrott-v1.2",
-        help="Nome que será usado no comando 'ollama run' (padrão: cyberrott-v1.2)."
+        default="cyberrott-v1.3",
+        help="Nome que será usado no comando 'ollama run' (padrão: cyberrott-v1.3)."
     )
     parser.add_argument(
         "--skip_merge",
@@ -279,9 +279,14 @@ if __name__ == "__main__":
 
     grpo_path = args.grpo_adapter
     if not os.path.exists(grpo_path):
-        drive_grpo = "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_2_GRPO"
-        if os.path.exists(drive_grpo):
-            grpo_path = drive_grpo
+        for candidate in [
+            "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_3_GRPO",
+            "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott-v1.3-GRPO",
+            "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_2_GRPO",
+        ]:
+            if os.path.exists(candidate):
+                grpo_path = candidate
+                break
 
     export_pipeline(
         base_model=args.base_model,
