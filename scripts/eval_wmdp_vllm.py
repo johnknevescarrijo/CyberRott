@@ -30,6 +30,8 @@ from datetime import datetime
 try:
     import peft.import_utils
     peft.import_utils.is_torchao_available = lambda: False
+    import peft.tuners.lora.torchao
+    peft.tuners.lora.torchao.is_torchao_available = lambda: False
 except Exception:
     pass
 

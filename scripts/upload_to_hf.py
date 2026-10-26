@@ -201,8 +201,16 @@ def upload_model(
     else:
         print("2. [INFO] Nenhum binário GGUF detectado localmente. Prosseguindo com pesos BF16 / Safetensors.")
 
+    # Validação de integridade: checar se existem pesos reais na pasta antes do upload
+    weight_files = [f for f in os.listdir(target_folder) if f.endswith((".safetensors", ".bin", ".gguf", ".pt"))]
+    if not weight_files:
+        print(f"\n❌ ERRO: Nenhum arquivo de pesos (*.safetensors, *.gguf, *.bin) encontrado em '{target_folder}'!")
+        print("A pasta contém apenas metadados/README. Certifique-se de executar a etapa de fusão/exportação com sucesso antes de realizar o upload.")
+        sys.exit(1)
+
     # 5. Fazer upload da pasta inteira com progresso e retry automático
     print(f"\n3. Iniciando upload da pasta de pesos ({target_folder})...")
+    print(f"   Arquivos de tensores detectados ({len(weight_files)}): {weight_files}")
     print("   Isso pode levar alguns minutos dependendo do tamanho e da largura de banda.")
     
     api.upload_folder(
