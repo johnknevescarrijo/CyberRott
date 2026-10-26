@@ -138,26 +138,34 @@ def export_pipeline(
     )
 
     # -------------------------------------------------------------------------
-    # Passo 4: Quantização de Alta Eficiência (ex: Q4_K_M)
+    # Passo 4: Quantização de Alta Eficiência (Opcional se quant_type != f16)
     # -------------------------------------------------------------------------
-    print("\n" + "=" * 70)
-    print(f"ETAPA 4: COMPILAÇÃO E QUANTIZAÇÃO PARA {quant_type}")
-    print("=" * 70)
+    is_f16 = quant_type.lower() in ["f16", "fp16", "none"]
+    if is_f16:
+        print("\n" + "=" * 70)
+        print("ETAPA 4: PRECISÃO F16 TOTAL SELECIONADA (QUANTIZAÇÃO PULADA)")
+        print("=" * 70)
+        print(f"[✓] O modelo GGUF foi gerado em precisão float16 total (não-quantizado): {f16_gguf_path}")
+        quant_gguf_path = f16_gguf_path
+    else:
+        print("\n" + "=" * 70)
+        print(f"ETAPA 4: COMPILAÇÃO E QUANTIZAÇÃO PARA {quant_type}")
+        print("=" * 70)
 
-    quantize_bin = os.path.join(llama_cpp_dir, "build", "bin", "llama-quantize")
-    if not os.path.exists(quantize_bin):
-        quantize_bin_alt = os.path.join(llama_cpp_dir, "llama-quantize")
-        if os.path.exists(quantize_bin_alt):
-            quantize_bin = quantize_bin_alt
-        else:
-            build_dir = os.path.join(llama_cpp_dir, "build")
-            run_cmd(f"cmake -B {build_dir} {llama_cpp_dir}", "Configurando CMake para compilação")
-            run_cmd(f"cmake --build {build_dir} --config Release -j --target llama-quantize", "Compilando binário llama-quantize")
+        quantize_bin = os.path.join(llama_cpp_dir, "build", "bin", "llama-quantize")
+        if not os.path.exists(quantize_bin):
+            quantize_bin_alt = os.path.join(llama_cpp_dir, "llama-quantize")
+            if os.path.exists(quantize_bin_alt):
+                quantize_bin = quantize_bin_alt
+            else:
+                build_dir = os.path.join(llama_cpp_dir, "build")
+                run_cmd(f"cmake -B {build_dir} {llama_cpp_dir}", "Configurando CMake para compilação")
+                run_cmd(f"cmake --build {build_dir} --config Release -j --target llama-quantize", "Compilando binário llama-quantize")
 
-    run_cmd(
-        f"{quantize_bin} {f16_gguf_path} {quant_gguf_path} {quant_type}",
-        f"Executando quantização {quant_type} no modelo"
-    )
+        run_cmd(
+            f"{quantize_bin} {f16_gguf_path} {quant_gguf_path} {quant_type}",
+            f"Executando quantização {quant_type} no modelo"
+        )
 
     # -------------------------------------------------------------------------
     # Passo 5: Geração Automática do Modelfile para Ollama
@@ -227,14 +235,14 @@ def parse_args():
     parser.add_argument(
         "--quant_type",
         type=str,
-        default="Q4_K_M",
-        choices=["Q4_K_M", "Q4_0", "Q5_K_M", "Q8_0", "f16"],
-        help="Método de quantização para deploy no Ollama/llama.cpp (padrão: Q4_K_M)."
+        default="f16",
+        choices=["f16", "F16", "fp16", "FP16", "Q4_K_M", "Q4_0", "Q5_K_M", "Q8_0"],
+        help="Método de quantização para deploy no Ollama/llama.cpp (padrão: f16 não-quantizado)."
     )
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="./CyberRott-v1.2-Export",
+        default="./CyberRott-v1.3-Export",
         help="Diretório onde serão salvos o modelo standalone, os GGUFs e o Modelfile."
     )
     parser.add_argument(
