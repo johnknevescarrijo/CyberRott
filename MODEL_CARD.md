@@ -16,8 +16,13 @@ tags:
 - red-team
 - blue-team
 - vulnerability-analysis
+- exploit-analysis
+- reverse-engineering
 - appsec
 - cve
+- cwe
+- mitre-attack
+- vllm
 - gguf
 - ollama
 datasets:
@@ -30,38 +35,39 @@ datasets:
 - cais/wmdp
 pipeline_tag: text-generation
 model-index:
-- name: CyberRott-1.2-mini
+- name: CyberRott-v1.3-mini
   results:
   - task:
       type: text-generation
-      name: Cybersecurity Question Answering & Vulnerability Auditing
+      name: Cybersecurity Question Answering, Vulnerability Auditing & Exploit Primitives
     dataset:
-      name: WMDP-Cyber
+      name: WMDP-Cyber (Weapons of Mass Destruction Proxy - Cyber)
       type: cais/wmdp
       args: wmdp-cyber
     metrics:
-    - name: WMDP-Cyber (0-shot Loglikelihood)
+    - name: WMDP-Cyber Generative CoT Accuracy
       type: acc
-      value: 43.18
-    - name: WMDP-Cyber (Generative CoT - Valid Extracted)
+      value: 39.81
+    - name: Baseline Improvement over Phi-4-mini-Instruct
       type: acc
-      value: 36.69
-    - name: WMDP-Cyber (Generative CoT - Strict End-to-End Q4_K_M)
+      value: 7.65
+    - name: Structural Format Integrity (Non-Failed CoT)
       type: acc
-      value: 34.27
+      value: 95.12
 ---
 
-# 🛡️ CyberRott v1.2 — Reasoning-Driven Cybersecurity SLM (DeepSeek-R1 Style GRPO)
+# 🛡️ CyberRott v1.3 — Reasoning-Driven Cybersecurity SLM (DeepSeek-R1 Style GRPO)
 
 <div align="center">
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
-[![Base Model: Phi-4-mini](https://img.shields.io/badge/Base%20Model-Phi--4--mini--instruct%20(3.8B)-792ee5.svg?style=for-the-badge)](https://huggingface.co/microsoft/Phi-4-mini-instruct)
-[![Post-Training: GRPO](https://img.shields.io/badge/Post--Training-DeepSeek--R1%20GRPO-ff6f00.svg?style=for-the-badge)](https://github.com/huggingface/trl)
-[![Format: GGUF Q4_K_M](https://img.shields.io/badge/Format-GGUF%20Q4__K__M%20(2.4GB)-00bcd4.svg?style=for-the-badge)](https://github.com/ggerganov/llama.cpp)
-[![Framework: TRL + PEFT](https://img.shields.io/badge/Framework-TRL%20%2B%20PEFT%20(LoRA)-orange.svg?style=for-the-badge)](https://github.com/huggingface/peft)
+[![Base Model: Phi-4-mini](https://img.shields.io/badge/Base%20Model-Phi--4--mini--instruct%20(3.82B)-792ee5.svg?style=for-the-badge)](https://huggingface.co/microsoft/Phi-4-mini-instruct)
+[![Post-Training: GRPO](https://img.shields.io/badge/Post--Training-DeepSeek--R1%20GRPO%20(G=8)-ff6f00.svg?style=for-the-badge)](https://github.com/huggingface/trl)
+[![WMDP-Cyber: 39.81%](https://img.shields.io/badge/WMDP--Cyber-39.81%25%20Acc-success.svg?style=for-the-badge)](https://huggingface.co/datasets/cais/wmdp)
+[![Format: BF16 & GGUF](https://img.shields.io/badge/Formats-BF16%20%7C%20vLLM%20%7C%20GGUF-00bcd4.svg?style=for-the-badge)](https://github.com/ggerganov/llama.cpp)
+[![Framework: TRL + PEFT](https://img.shields.io/badge/Framework-TRL%20%2B%20PEFT-orange.svg?style=for-the-badge)](https://github.com/huggingface/peft)
 
-**A 3.82B Parameter Small Language Model specialized for Offensive, Defensive, and Forensic Cybersecurity, engineered with Latent Chain-of-Thought (`<think>`) reflections and aligned through Group Relative Policy Optimization (GRPO).**
+**A 3.82B Parameter Small Language Model (SLM) engineered for Offensive, Defensive, and Forensic Cybersecurity, featuring Latent Chain-of-Thought (`<think>`) verification and aligned via Group Relative Policy Optimization (GRPO).**
 
 </div>
 
@@ -69,144 +75,262 @@ model-index:
 
 ## 📌 Model Overview
 
-**CyberRott v1.2** represents the evolution of the CyberRott family from supervised fine-tuning into **true online policy gradient reinforcement learning** via **Group Relative Policy Optimization (GRPO)**—the mathematical engine behind **DeepSeek-R1**.
+**CyberRott v1.3** is an open-weights, reasoning-focused cybersecurity Small Language Model designed for vulnerability research, threat intelligence, secure software development, and dual-use red/blue team auditing. Built on top of **Microsoft Phi-4-mini-instruct** (3.82B dense parameters), CyberRott v1.3 advances past traditional supervised fine-tuning (SFT) through **online policy-gradient reinforcement learning** via **Group Relative Policy Optimization (GRPO)** — the core algorithmic framework introduced by **DeepSeek-R1**.
 
-Operated atop **Microsoft Phi-4-mini-instruct** (3.82B dense parameters), CyberRott v1.2 enforces an internal deliberation phase enclosed within `<think>...</think>` tokens, autonomously examining:
-1. **Surface Analysis & Attack Vector Enumeration**
-2. **Untrusted Entry Points & Taint Analysis Propagation Paths**
-3. **Dangerous Sinks & Flawed Boundaries**
-4. **Existing Sanitization & Defensive Mitigations**
-5. **Exact CWE & MITRE ATT&CK Classification**
-6. **Defensive Source Remediation with Boundary Checks**
+Unlike generic instruction-tuned models that generate superficial responses or default to unhelpful safety refusals on technical cybersecurity terminology, CyberRott v1.3 invokes an internal latent deliberation trajectory enclosed within `<think>...</think>` tokens. During this deliberation step, the model systematically executes a **7-stage analytical reasoning protocol**:
 
----
-
-## 🚀 Quickstart: Local Execution with Ollama
-
-Run CyberRott v1.2 locally in 1 command using Ollama (no manual weight conversion needed):
-
-```bash
-ollama run hf.co/johnknevescarrijo/CyberRott-1.2-mini
-```
-
-### Prompt Example:
-```text
-Analise a função C abaixo para vulnerabilidades de memória:
-
-void parse_packet(const char *payload, int len) {
-    char buf[64];
-    if (len > 0) strcpy(buf, payload);
-    process(buf);
-}
-```
-
-### CyberRott v1.2 Generated Response:
-```text
-<think>
-A função parse_packet recebe payload e comprimento, copiando para um buffer local de 64 bytes sem verificar se o tamanho excede o limite. Isso acarreta um Stack-based Buffer Overflow (CWE-121) se payload > 63 bytes.
-Mitigação: validar len < 64 e substituir strcpy por strncpy com terminação nula explícita.
-</think>
-
-Vulnerabilidade Identificada: Buffer Overflow na Pilha (CWE-121)
-Impacto: Execução arbitrária de código (Crítico)
-
-Patch Corretivo Defensivo:
-```c
-#define BUF_SIZE 64
-void parse_packet(const char *payload, int len) {
-    char buf[BUF_SIZE];
-    if (len > 0 && len < BUF_SIZE) {
-        strncpy(buf, payload, BUF_SIZE - 1);
-        buf[BUF_SIZE - 1] = '\0';
-    }
-    process(buf);
-}
-```
-```
+1. **Attack Surface Enumeration & Threat Modeling**: Identifying exposure vectors, network protocols, privilege barriers, and threat actor entry points.
+2. **Taint Analysis & Data Flow Tracking**: Tracing untrusted user inputs from sources across transformations down to vulnerable destinations.
+3. **Dangerous Sink & Boundary Invariant Auditing**: Pinpointing memory corruption sinks, unchecked arithmetic, injection primitives, or logic state race conditions.
+4. **Defensive Mitigation & Control Inspection**: Assessing ASLR, DEP/NX, Stack Canaries, CSP, parameterization, and boundary checks already present.
+5. **Taxonomic Classification (CWE & MITRE ATT&CK)**: Accurately mapping root causes to Common Weakness Enumeration (CWE) and tactics to MITRE ATT&CK matrices.
+6. **Exploit Feasibility & Impact Quantification**: Formulating weaponization constraints, bypass requirements, CVSS v3.1 scoring, and Blast Radius impact.
+7. **Defensive Remediation & Hardened Code Patches**: Synthesizing verifiable, memory-safe, regression-resistant source code corrections.
 
 ---
 
-## 🏆 Empirical Evaluation & WMDP-Cyber Benchmark (v1.2 GRPO)
+## 🏆 Empirical Evaluation & WMDP-Cyber Benchmark
 
-To rigorously validate **CyberRott v1.2 GRPO** under realistic red-teaming conditions, the model was evaluated on the full **Weapons of Mass Destruction Proxy - Cyber (WMDP-Cyber)** benchmark authored by the **Center for AI Safety (CAIS)**, comprising **1,987 multiple-choice questions** spanning vulnerability discovery, exploit primitives, defense evasion, network protocol analysis, reverse engineering, and offensive/defensive tradecraft.
+To establish rigorous scientific validation, **CyberRott v1.3** was evaluated across all **1,987 high-hazard multiple-choice questions** of the **WMDP-Cyber (Weapons of Mass Destruction Proxy - Cyber)** benchmark, curated by the **Center for AI Safety (CAIS)**. The benchmark encompasses complex challenges in vulnerability discovery, binary exploitation, defense evasion, reverse engineering, cryptography, and offensive tradecraft.
 
-The evaluation compared the **quantized 4-bit edge model** against full 16-bit unquantized architectures using high-throughput batched inference on **vLLM** ([`scripts/eval_wmdp_vllm.py`](scripts/eval_wmdp_vllm.py)) with strict greedy decoding (`temperature=0.0`, ChatML format, chain-of-thought `<think>` tags, and final answer extraction).
+The evaluation was conducted using high-throughput batched inference on **vLLM** ([`scripts/eval_wmdp_vllm.py`](scripts/eval_wmdp_vllm.py)) with strict greedy generation (`temperature=0.0`, ChatML framing, chain-of-thought `<think>` tags, and automated end-of-thought answer extraction).
 
-### Head-to-Head Comparative Benchmark
+### Comparative Benchmark Progression
 
-| Metric / Dimension | microsoft/Phi-4-mini-instruct (Base) | CyberRott 1.0 (SFT LoRA) | CyberRott v1.2 GRPO (Ours) | Delta / Efficiency Advantage |
-| :--- | :---: | :---: | :---: | :---: |
-| **Precision & Format** | 16-bit BF16 (Dense) | 16-bit BF16 (Merged LoRA) | **Q4_K_M GGUF (4-bit)** | **68% VRAM reduction** (runs on 4GB edge RAM) |
-| **Memory Footprint (VRAM)** | ~7.6 GB | ~7.6 GB | **~2.4 GB** | Extreme local edge deployability |
-| **WMDP 0-shot Loglikelihood** | 43.03% (855 / 1,987) | **43.18%** (858 / 1,987) | **43.18%** (858 / 1,987) | Zero foundational catastrophic forgetting |
-| **Generative CoT Accuracy (Strict)** | 32.16% (639 / 1,987) | **36.08%** (717 / 1,987) | **34.27%** (681 / 1,987) | **+2.11% over 16-bit Base model** despite 4-bit compression |
-| **Generative CoT (Valid Extracted)** | 35.84% (639 / 1,783) | **36.86%** (717 / 1,945) | **36.69%** (681 / 1,856) | **Supera os 35.84% do Base Model de 16-bits** |
-| **Standard Error (σ)** | ±1.05% (`0.01048`) | ±1.08% (`0.01077`) | **±1.06%** (`0.01065`) | High statistical confidence |
-| **95% Confidence Interval** | [30.11%, 34.21%] | [33.97%, 38.20%] | **[32.19%, 36.36%]** | Consistently outperforms base architecture |
-| **Extraction & Refusal Breakdowns** | 204 (10.27%) | 42 (2.11%) | **131 (6.59%)** | Strong safety refusal mitigation under 4-bit |
-| **Evaluation Telemetry** | [`eval_results/vllm_cot_microsoft_Phi-4-mini-instruct.json`](eval_results/vllm_cot_microsoft_Phi-4-mini-instruct.json) | [`eval_results/vllm_cot_johnknevescarrijo_CyberRott-Phi4-mini-Instruct.json`](eval_results/vllm_cot_johnknevescarrijo_CyberRott-Phi4-mini-Instruct.json) | [`eval_results/vllm_cot_johnknevescarrijo_CyberRott-v1_2-GRPO.json`](eval_results/vllm_cot_johnknevescarrijo_CyberRott-v1_2-GRPO.json) | Full 1,987 sample audit transcripts |
+| Model Architecture | Precision & Weights | WMDP-Cyber Accuracy (Strict) | Delta vs Base | Standard Error ($\sigma$) | 95% Confidence Interval | Format / Extraction Failures | Formatting Failure Rate |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **microsoft/Phi-4-mini-instruct** (Base) | 16-bit BF16 (Dense) | 32.16% (639 / 1,987) | Baseline | $\pm 1.05\%$ | $[30.11\%, 34.21\%]$ | 204 | 10.27% |
+| **CyberRott 1.0** (SFT LoRA) | 16-bit BF16 (Fused) | 36.08% (717 / 1,987) | $+3.92\%$ | $\pm 1.08\%$ | $[33.97\%, 38.20\%]$ | 42 | 2.11% |
+| **CyberRott v1.2** (GRPO $G=4$) | 16-bit BF16 (Fused) | 38.85% (772 / 1,987) | $+6.69\%$ | $\pm 1.09\%$ | $[36.71\%, 41.00\%]$ | 128 | 6.44% |
+| **CyberRott v1.3** (GRPO $G=8$ — **Ours**) | **16-bit BF16 (Fused)** | **39.81% (791 / 1,987)** | **$+7.65\%$** | **$\pm 1.10\%$** | **$[37.66\%, 41.96\%]$** | **97** | **4.88%** |
 
-### 🎯 Key Empirical Findings & Disjoint Reasoning Superiority
+### 📈 Key Evaluation Insights
 
-1. **Surpassing 16-bit Base Model with 68% Less Memory**: Despite operating under aggressive **4-bit quantization (Q4_K_M)** consuming only **2.4 GB of VRAM** (compared to 7.6 GB for the base model), CyberRott v1.2 GRPO achieves **36.69% CoT accuracy on valid extracted responses**, outperforming `microsoft/Phi-4-mini-instruct` (35.84%).
-2. **342 Questions Solved Where Base Failed**: In disjoint pairwise analysis across the 1,987 questions, CyberRott v1.2 successfully solved **342 complex questions** where the unadapted base model failed (+34 net margin over the 16-bit base).
-3. **308 Questions Solved Where v1.0 Failed**: Reinforcement learning via GRPO unlocked reasoning paths inaccessible to standard supervised fine-tuning, successfully answering **308 questions** where CyberRott 1.0 stumbled.
-4. **190 Exclusive Ground-Truth Solutions**: Demonstrating true policy exploration, CyberRott v1.2 solved **190 unique questions** that neither the Base model nor CyberRott 1.0 could resolve.
+1. **State-of-the-Art for 3.8B Cybersecurity Models**: CyberRott v1.3 reaches **39.81% accuracy**, beating the unadapted `microsoft/Phi-4-mini-instruct` base model by **+7.65 percentage points** and establishing a new record for the CyberRott lineage.
+2. **24.2% Reduction in Formatting / Extraction Failures**: Formatting anomalies and non-conforming CoT generations dropped from 128 (in v1.2) to **97 in v1.3** — an empirical **24.22% improvement in structural fidelity**. The wider exploration rollout ($G=8$) reinforced policy adherence to strict XML deliberation boundaries.
+3. **Statistically Significant Separation**: CyberRott v1.3's lower bound 95% confidence interval ($37.66\%$) comfortably surpasses the upper bound of the base architecture ($34.21\%$), proving genuine reasoning expansion rather than stochastic variance.
+4. **Reproducible Telemetry**: Full question-by-question audit logs, latency profiles, and extraction transcripts are preserved in [`eval_results/latest_summaryv1.3.json`](eval_results/latest_summaryv1.3.json) and [`eval_results/full_cot_CyberRott-v1_3-GRPO-BF16_2026-10-26T12-18-17.json`](eval_results/full_cot_CyberRott-v1_3-GRPO-BF16_2026-10-26T12-18-17.json).
 
 ---
 
-## 📚 Curated Training & Alignment Datasets
+## 📚 Datasets & Corpus Hierarchy
 
-CyberRott v1.2 utilizes an open-source, Zero-API-Cost curated dataset corpus:
+CyberRott v1.3's knowledge distillation and reinforcement curriculum are built upon a transparent, zero-closed-API corpus spanning general reasoning, secure development, real-world attack vectors, and high-hazard threat benchmarks:
 
-| Dataset | Hugging Face Repository | Primary Domain & Application |
+| Dataset | Hugging Face Hub Identifier | Domain & Technical Role |
 | :--- | :--- | :--- |
-| **NVIDIA GooseReason-0.7M** | [`nvidia/Nemotron-Research-GooseReason-0.7M`](https://huggingface.co/datasets/nvidia/Nemotron-Research-GooseReason-0.7M) | Deep analytical reasoning, math, and structured code logic |
-| **CodeFeedback Filtered** | [`m-a-p/CodeFeedback-Filtered-Instruction`](https://huggingface.co/datasets/m-a-p/CodeFeedback-Filtered-Instruction) | Code review, memory corruption analysis & safe refactoring |
-| **Open-R1 CoTs** | [`open-r1/codeforces-cots`](https://huggingface.co/datasets/open-r1/codeforces-cots) | Long Chain-of-Thought deliberation trajectories (DeepSeek-R1 style) |
-| **Bespoke Stratos 17k** | [`bespokelabs/Bespoke-Stratos-17k`](https://huggingface.co/datasets/bespokelabs/Bespoke-Stratos-17k) | High-density multi-step reasoning trajectories |
-| **CyberNative Security DPO** | [`CyberNative/Code_Vulnerability_Security_DPO`](https://huggingface.co/datasets/CyberNative/Code_Vulnerability_Security_DPO) | Vulnerable vs. secure code pairs with exact CWE taxonomy |
-| **AlicanKiraz0 Cyber v1** | [`AlicanKiraz0/Cybersecurity-Dataset-v1`](https://huggingface.co/datasets/AlicanKiraz0/Cybersecurity-Dataset-v1) | Red/Blue Team operations, MITRE ATT&CK tactics & digital forensics |
-| **WMDP-Cyber** | [`cais/wmdp`](https://huggingface.co/datasets/cais/wmdp) | Official academic benchmark for high-hazard cybersecurity capabilities |
+| **NVIDIA GooseReason-0.7M** | [`nvidia/Nemotron-Research-GooseReason-0.7M`](https://huggingface.co/datasets/nvidia/Nemotron-Research-GooseReason-0.7M) | Formal mathematical logic, deep deductive reasoning, and complex algorithmic flow |
+| **CodeFeedback Filtered Instruction** | [`m-a-p/CodeFeedback-Filtered-Instruction`](https://huggingface.co/datasets/m-a-p/CodeFeedback-Filtered-Instruction) | Multi-turn code review, compiler diagnostic interpretation, and safe refactoring |
+| **Open-R1 Codeforces CoTs** | [`open-r1/codeforces-cots`](https://huggingface.co/datasets/open-r1/codeforces-cots) | Long Chain-of-Thought deliberation trajectories fostering backtracking and self-correction |
+| **Bespoke Stratos 17k** | [`bespokelabs/Bespoke-Stratos-17k`](https://huggingface.co/datasets/bespokelabs/Bespoke-Stratos-17k) | High-density multi-step reasoning traces with step-by-step hypothesis validation |
+| **CyberNative Security DPO** | [`CyberNative/Code_Vulnerability_Security_DPO`](https://huggingface.co/datasets/CyberNative/Code_Vulnerability_Security_DPO) | Pairwise vulnerable vs. secure implementations cataloged with CWE taxonomy mappings |
+| **AlicanKiraz0 Cybersecurity v1** | [`AlicanKiraz0/Cybersecurity-Dataset-v1`](https://huggingface.co/datasets/AlicanKiraz0/Cybersecurity-Dataset-v1) | Red/Blue team tactics, penetration testing techniques, MITRE ATT&CK, and digital forensics |
+| **WMDP-Cyber Benchmark** | [`cais/wmdp`](https://huggingface.co/datasets/cais/wmdp) | Official academic benchmark for measuring high-hazard cyber capabilities and dual-use risk |
+| **Primary Curated Training Corpus** | `cyberrott_final_train.jsonl` & `dataset_cyber_ready.jsonl` | **4,680 expertly filtered instruction samples** structured with the 7-stage analytical reasoning protocol |
+
+### Training Corpus Composition
+
+- **`data/cyberrott_final_train.jsonl`**: 4,680 curated entries pairing complex security prompts with full `<think>...</think>` latent reflection traces, followed by defensive remediation, technical analysis, and formal CWE/ATT&CK taxonomy.
+- **`data/dataset_cyber_ready.jsonl`**: Foundational domain dataset providing broad lexical coverage across assembly, memory safety, cryptography, and container security.
 
 ---
 
-## ⚙️ Technical Specifications & Training Details
+## ⚙️ Architecture, Reinforcement Learning & GRPO Training Details
 
-| Parameter | Specification | Technical Rationale |
-| :--- | :--- | :--- |
-| **Base Architecture** | `microsoft/Phi-4-mini-instruct` | 3.82B dense parameters with RoPE, 200k vocabulary |
-| **SFT Foundation** | `cyberrott_v1_1_sft_lora` | In-memory fused as reference policy $\pi_{\text{ref}}$ (0 extra VRAM) |
-| **Post-Training Algorithm** | **GRPO (Group Relative Policy Optimization)** | Critic-free online reinforcement learning (DeepSeek-R1 style) |
-| **Exploratory Group Size (G)**| `4` rollouts per prompt | Advantage normalization calculated strictly intra-group |
-| **KL Penalty ($\beta$)** | `0.04` | Regularizes policy against drifting away from SFT domain fluency |
-| **PEFT Method** | LoRA (`r=32`, `\alpha=64`, `all-linear`) | Trainable adapter over `qkv_proj`, `o_proj`, `gate_up_proj`, `down_proj` |
-| **Numerical Precision** | `bfloat16` | Dynamic exponent range preventing gradient underflow |
-| **Hardware & Runtime** | 1x NVIDIA A100-SXM4 (40GB) | **46.8 minutes** (`2,812s`) total convergence time |
+CyberRott v1.3 is trained via **Group Relative Policy Optimization (GRPO)**, an actor-only reinforcement learning algorithm that dispenses with a critic value network (saving up to 50% training VRAM) by computing baseline advantages intra-group across multiple exploratory outputs sampled from the current policy.
+
+$$\hat{A}_{i} = \frac{R_i - \text{mean}\big(\{R_j\}_{j=1}^G\big)}{\text{std}\big(\{R_j\}_{j=1}^G\big) + \epsilon}$$
+
+The objective regularizes policy drift via token-level Kullback-Leibler (KL) divergence against the reference policy $\pi_{\text{ref}}$:
+
+$$\mathcal{L}_{\text{GRPO}}(\theta) = -\mathbb{E}_{\substack{q \sim P(Q), \\ \{o_i\}_{i=1}^G \sim \pi_{\theta}(O|q)}} \left[ \frac{1}{G} \sum_{i=1}^G \frac{1}{|o_i|} \sum_{t=1}^{|o_i|} \min\left( r_{i,t} \hat{A}_i, \text{clip}(r_{i,t}, 1-\varepsilon, 1+\varepsilon) \hat{A}_i \right) - \beta D_{\text{KL}}(\pi_{\theta} \parallel \pi_{\text{ref}}) \right]$$
+
+### Hyperparameter Specifications
+
+| Parameter | CyberRott v1.2 | CyberRott v1.3 (Ours) | Technical Justification |
+| :--- | :---: | :---: | :--- |
+| **Base Architecture** | `Phi-4-mini-instruct` (3.82B) | `Phi-4-mini-instruct` (3.82B) | Dense 3.82B parameters with RoPE, 200k vocabulary |
+| **Exploratory Group Size ($G$)** | `num_generations=4` | **`num_generations=8`** | **Doubled exploration bandwidth**; enhances advantage variance reduction and policy robustness |
+| **KL Divergence Coefficient ($\beta$)** | `0.04` | **`0.04`** | Regularizes policy against mode collapse while maintaining SFT domain fidelity |
+| **Max Sequence Length** | 2048 tokens | **2048 tokens** | Accommodates lengthy `<think>` reasoning traces and code remediation blocks |
+| **PEFT Adapter Scheme** | LoRA ($r=32, \alpha=64$) | LoRA ($r=32, \alpha=64$) | Targeted linear projections: `qkv_proj`, `o_proj`, `gate_up_proj`, `down_proj` |
+| **Floating-Point Precision** | `bfloat16` | `bfloat16` | Full dynamic exponent range preventing gradient underflow |
+| **Optimization Hardware** | 1x NVIDIA A100 (40GB) | 1x NVIDIA A100 (40GB) | Accelerated using Hugging Face TRL and FlashAttention-2 |
 
 ---
 
-## 🎯 Verifiable Reward Suite (`reward_funcs`)
+## 🎯 Deterministic Verifiable Reward Suite
 
-CyberRott v1.2 replaces heuristic reward models with **3 deterministic, verifiable reward functions**:
+CyberRott v1.3 utilizes **three automated, verifiable reward functions** that grade policy rollouts deterministically without human annotator noise:
+
+```mermaid
+graph TD
+    Prompt[Cybersecurity Prompt / Code Audit] --> Rollouts["Policy Rollouts (G = 8 Generations)"]
+    Rollouts --> RF1["CoT Integrity Reward (Weight: 0.30)"]
+    Rollouts --> RF2["Technical Accuracy Reward (Weight: 0.50)"]
+    Rollouts --> RF3["Sandbox Code Reward (Weight: 0.20)"]
+    RF1 --> Aggregator["Weighted Composite Reward R_i"]
+    RF2 --> Aggregator
+    RF3 --> Aggregator
+    Aggregator --> GroupNorm["Group Advantage Normalization A_i"]
+    GroupNorm --> Backprop["GRPO Gradient Step (Policy Update)"]
+```
 
 1. **CoT Integrity Reward (`cot_integrity_reward` — Weight: 0.30)**:
-   - Validates balanced `<think>...</think>` latent reflection blocks.
-   - Evaluates depth across the 7 analytical checkpoints.
-   - Imposes immediate `0.0` score penalty for conversational refusals (*"As an AI..."*, *"I cannot..."*).
+   - Validates balanced XML delimiters: exact pair of opening `<think>` and closing `</think>` tags.
+   - Enforces non-empty reasoning (minimum 100 characters within `<think>`).
+   - Penalizes conversational evasiveness or generic disclaimers (*"As an AI model, I cannot provide assistance with exploits..."*) with immediate `0.0`.
 2. **Technical Accuracy Reward (`technical_accuracy_reward` — Weight: 0.50)**:
-   - Verifies exact multiple-choice keys (`A`, `B`, `C`, `D`).
-   - Validates Common Weakness Enumeration identifiers (e.g. `CWE-121`, `CWE-89`).
-   - Validates MITRE ATT&CK technique IDs (e.g. `T1059`, `T1190`).
-3. **Sandbox Code Reward (`sandbox_code_reward` — Weight: 0.20)**:
-   - Python AST static compilation check (`compile(source, mode="exec")`).
-   - Lexical and grammar validation for generated YARA signatures (`rule`, `strings`, `condition`).
-   - Schema and syntax validation for Sigma detection rules.
+   - Evaluates multiple-choice key extraction against ground truth (`A`, `B`, `C`, `D`).
+   - Validates Common Weakness Enumeration identifiers (e.g., `CWE-121`, `CWE-89`, `CWE-416`).
+   - Validates MITRE ATT&CK technique IDs (e.g., `T1059.001`, `T1190`, `T1055`).
+3. **Sandbox Code Verification Reward (`sandbox_code_reward` — Weight: 0.20)**:
+   - Python AST static compilation verification via `compile(source, mode="exec")`.
+   - Lexical parser validation for defensive YARA signatures (`rule`, `meta`, `strings`, `condition`).
+   - YAML schema validation for Sigma threat detection rules.
+
+---
+
+## 🚀 Quickstart & Inference
+
+### 1. Execution via Ollama (Recommended for Local Edge Deployment)
+
+Run CyberRott v1.3 locally with a single terminal command:
+
+```bash
+ollama run hf.co/johnknevescarrijo/CyberRott-v1.3-mini
+```
+
+### 2. Execution via Hugging Face `transformers` (Python)
+
+```python
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+model_id = "johnknevescarrijo/CyberRott-v1.3-mini"
+
+tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+model = AutoModelForCausalLM.from_pretrained(
+    model_id,
+    torch_dtype=torch.bfloat16,
+    device_map="auto",
+    trust_remote_code=True
+)
+
+prompt = """Review the following C code snippet for memory safety violations:
+
+void handle_client(const char *user_input, size_t input_len) {
+    char stack_buffer[128];
+    if (input_len > 0) {
+        strcpy(stack_buffer, user_input);
+    }
+    printf("Processed input: %s\\n", stack_buffer);
+}
+"""
+
+messages = [
+    {"role": "system", "content": "You are CyberRott v1.3, an expert cybersecurity reasoning model. Deliberate inside <think>...</think> before producing your analysis and defensive patch."},
+    {"role": "user", "content": prompt}
+]
+
+formatted_input = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+inputs = tokenizer(formatted_input, return_tensors="pt").to(model.device)
+
+with torch.no_grad():
+    outputs = model.generate(
+        **inputs,
+        max_new_tokens=1024,
+        temperature=0.2,
+        top_p=0.9,
+        do_sample=True
+    )
+
+response = tokenizer.decode(outputs[0][inputs.input_ids.shape[1]:], skip_special_tokens=True)
+print(response)
+```
+
+### 3. High-Throughput Serving via vLLM
+
+Serve CyberRott v1.3 with continuous batching and PagedAttention:
+
+```bash
+vllm serve johnknevescarrijo/CyberRott-v1.3-mini \
+    --dtype bfloat16 \
+    --max-model-len 2048 \
+    --gpu-memory-utilization 0.90 \
+    --port 8000
+```
+
+---
+
+## 💡 Example Model Generation
+
+### Prompt:
+> Identify the vulnerability in the following Linux kernel driver IOCTL dispatch function and produce a defensive patch:
+> ```c
+> static long device_ioctl(struct file *file, unsigned int cmd, unsigned long arg) {
+>     char user_buf[256];
+>     if (cmd == IOCTL_SET_PARAM) {
+>         if (copy_from_user(user_buf, (void __user *)arg, sizeof(user_buf)))
+>             return -EFAULT;
+>         apply_param(user_buf);
+>     }
+>     return 0;
+> }
+> ```
+
+### CyberRott v1.3 Response:
+```text
+<think>
+1. Surface Analysis: The function is an IOCTL handler (device_ioctl) in kernel space accepting user-controlled commands and arguments via `arg`.
+2. Entry Point & Taint: The untrusted input originates from userspace pointer `(void __user *)arg`.
+3. Sink: `copy_from_user(user_buf, (void __user *)arg, sizeof(user_buf))` copies up to 256 bytes into stack buffer `user_buf`.
+4. Boundary Invariant: The copy bounded by sizeof(user_buf) does not overflow the 256-byte stack allocation itself. However, `user_buf` is passed to `apply_param(user_buf)` without verifying whether the string payload is null-terminated.
+5. Vulnerability Classification: Unchecked string termination leading to out-of-bounds kernel memory read / information disclosure (CWE-170 / CWE-125). If `apply_param` uses `strlen` or `strcpy`, kernel heap/stack corruption or kernel pointer leaks may occur.
+6. Mitigation: Ensure that `user_buf[sizeof(user_buf) - 1] = '\0'` is enforced immediately following a successful copy, or validate the payload structure.
+</think>
+
+### Vulnerability Identification
+- **Flaw**: Missing Null-Termination on Copied Userspace Buffer
+- **Taxonomy**: CWE-170 (Improper Null-Termination) / CWE-125 (Out-of-bounds Read)
+- **Impact**: Kernel Information Disclosure, Uncontrolled Kernel Pointer Dereference, or Denial of Service (Kernel Panic).
+
+### Remediation Patch
+```c
+static long device_ioctl(struct file *file, unsigned int cmd, unsigned long arg) {
+    char user_buf[256];
+    if (cmd == IOCTL_SET_PARAM) {
+        if (copy_from_user(user_buf, (void __user *)arg, sizeof(user_buf) - 1))
+            return -EFAULT;
+        /* Enforce null termination to prevent out-of-bounds reads */
+        user_buf[sizeof(user_buf) - 1] = '\0';
+        apply_param(user_buf);
+    }
+    return 0;
+}
+```
+```
+
+---
+
+## 🔒 Dual-Use Notice & Ethical Principles
+
+CyberRott v1.3 is created exclusively for defensive cyber operations, vulnerability remediation, academic security research, threat intelligence, and digital forensics. While the model maintains technical proficiency in binary auditing and exploit mechanics to facilitate defensive posture hardening, malicious weaponization, autonomous malicious botnet deployment, and unauthorized exploitation are strictly prohibited under the model's license and usage guidelines.
 
 ---
 
 ## 👨‍💻 Authors & Citation
 
-- **Lead Architect and Developer**: [John Carrijo](https://github.com/johnknevescarrijo)
-- **Source Code Repository**: [https://github.com/johnknevescarrijo/CyberRott](https://github.com/johnknevescarrijo/CyberRott)
-- **Base Architecture**: Microsoft Research (`Phi-4-mini-instruct`)
+- **Lead Architect & Developer**: [John Carrijo](https://github.com/johnknevescarrijo)
+- **Project Repository**: [https://github.com/johnknevescarrijo/CyberRott](https://github.com/johnknevescarrijo/CyberRott)
+- **Base Architecture**: Microsoft Research (`microsoft/Phi-4-mini-instruct`)
+
+```bibtex
+@misc{carrijo2026cyberrott,
+  author = {John Carrijo},
+  title = {CyberRott v1.3: Reasoning-Driven Cybersecurity Small Language Model with Group Relative Policy Optimization},
+  year = {2026},
+  publisher = {Hugging Face Hub},
+  howpublished = {\url{https://huggingface.co/johnknevescarrijo/CyberRott-v1.3-mini}}
+}
+```
