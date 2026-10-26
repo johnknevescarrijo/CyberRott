@@ -33,6 +33,12 @@ def resolve_adapter_path(path: str) -> str:
                 return root
     # Candidatos padrão no Colab
     candidates = [
+        "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott-v1.3-GRPO",
+        "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_3_GRPO",
+        "./CyberRott-v1.3-GRPO",
+        "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott-v1.2-GRPO",
+        "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_2_GRPO",
+        "./CyberRott-v1.2-GRPO",
         "/content/drive/MyDrive/CyberRott_Checkpoints/cyberrott_v1_1_sft_lora",
         "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_1_Final",
         "./cyberrott_v1_1_sft_lora",
@@ -88,11 +94,17 @@ def merge_and_save(
         print(f"3. Fundindo camada SFT intermediária: {resolved_sft}...")
         sft_model = PeftModel.from_pretrained(base_model, resolved_sft)
         base_model = sft_model.merge_and_unload()
+        # Remove peft_config residual para evitar conflito/aviso ao carregar o próximo adaptador LoRA
+        if hasattr(base_model, "peft_config"):
+            delattr(base_model, "peft_config")
         print("   [✓] Camada SFT fundida com sucesso no modelo base!")
 
     print(f"4. Fundindo adaptadores finais de: {resolved_final}...")
     final_lora_model = PeftModel.from_pretrained(base_model, resolved_final)
     merged_model = final_lora_model.merge_and_unload()
+    # Remove peft_config residual para garantir salvamento puro de modelo base Transformers
+    if hasattr(merged_model, "peft_config"):
+        delattr(merged_model, "peft_config")
     print("   [✓] Camada final fundida com sucesso!")
 
     print(f"5. Salvando modelo completo standalone em: {output_path}...")
@@ -119,7 +131,7 @@ if __name__ == "__main__":
     parser.add_argument("--base_model", default="microsoft/Phi-4-mini-instruct", help="Caminho do modelo base")
     parser.add_argument("--sft_adapter", default=None, help="Caminho do adaptador SFT prévio (opcional para modelos GRPO)")
     parser.add_argument("--adapter", required=True, help="Pasta contendo os adaptadores LoRA treinados (GRPO ou SFT)")
-    parser.add_argument("--output", default="./CyberRott-v1.2-Standalone", help="Pasta de destino para o modelo fundido")
+    parser.add_argument("--output", default="./CyberRott-v1.3-Standalone", help="Pasta de destino para o modelo fundido")
     parser.add_argument("--torch_dtype", default="bfloat16", choices=["bfloat16", "float16", "float32"], help="Precisão dos pesos fundidos")
     args = parser.parse_args()
 

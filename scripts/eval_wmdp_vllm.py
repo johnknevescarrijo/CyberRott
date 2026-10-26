@@ -10,6 +10,7 @@ Suporta checkpoints standalone BF16 puros, repositórios Hugging Face e fusão a
 import os
 import sys
 import shutil
+import subprocess
 
 # Desativa TensorFlow quebrado no Python 3.13 do Colab
 os.environ["USE_TF"] = "0"
@@ -166,6 +167,12 @@ def resolve_model_or_adapter_path(model_name: str, sft_adapter: str = None, base
             # 2. Se não existir localmente, busca nos caminhos candidatos conhecidos
             if not resolved_model:
                 model_candidates = [
+                    "/content/CyberRott-v1.3-BF16-Standalone",
+                    "/content/CyberRott-v1.3-Standalone",
+                    "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_3_GRPO",
+                    "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott-v1.3-GRPO",
+                    "/content/CyberRott/CyberRott-v1.3-GRPO",
+                    "./CyberRott-v1.3-GRPO",
                     "/content/CyberRott-v1.2-BF16-Standalone",
                     "/content/CyberRott-v1.2-Standalone",
                     "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_2_GRPO",
@@ -341,8 +348,19 @@ def main():
         is_adapter = os.path.exists(os.path.join(model_to_load, "adapter_config.json"))
         has_config = os.path.exists(os.path.join(model_to_load, "config.json"))
         if is_adapter and not has_config:
-            standalone_target = "/content/CyberRott-v1.2-BF16-Standalone" if os.path.exists("/content") else "./CyberRott-v1.2-BF16-Standalone"
-            standalone_target = os.path.abspath(standalone_target)
+            # Identifica a versão do modelo (ex: v1.3 ou v1.2)
+            version_str = "v1.3" if any(v in model_to_load.lower() or v in args.model_name.lower() for v in ["v1_3", "v1.3", "1.3"]) else "v1.2"
+            base_dir = "/content" if os.path.exists("/content") else "."
+            standalone_target = os.path.abspath(os.path.join(base_dir, f"CyberRott-{version_str}-BF16-Standalone"))
+
+            # Tratamento de execução anterior: se for v1.3 mas havia sido salvo em CyberRott-v1.2-BF16-Standalone
+            legacy_target = os.path.abspath(os.path.join(base_dir, "CyberRott-v1.2-BF16-Standalone"))
+            if version_str == "v1.3" and not os.path.exists(os.path.join(standalone_target, "config.json")):
+                if os.path.exists(os.path.join(legacy_target, "config.json")):
+                    print(f"[*] Detectado modelo fundido na execução anterior em '{legacy_target}'.")
+                    print(f"[*] Movendo/Renomeando para o destino correto '{standalone_target}'...")
+                    shutil.move(legacy_target, standalone_target)
+
             print(f"[*] Detectado adaptador LoRA em '{model_to_load}'. Verificando modelo standalone em '{standalone_target}'...")
             if not os.path.exists(os.path.join(standalone_target, "config.json")):
                 print(f"[*] Standalone não encontrado. Executando fusão automática via merge_lora em bfloat16 puro...")
@@ -367,7 +385,6 @@ def main():
             import gguf
         except ImportError:
             print("[*] Instalando pacote 'gguf>=0.10.0' necessário para descompactação...")
-            import subprocess
             subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "gguf>=0.10.0"])
 
         # Remove cache legado corrompido para liberar espaço no Colab
@@ -383,8 +400,6 @@ def main():
                 tokenizer_tmp = AutoTokenizer.from_pretrained(args.base_model, trust_remote_code=False)
             tokenizer_tmp.save_pretrained(unpacked_dir)
 
-            import gc
-            import torch
             gguf_dir = os.path.dirname(os.path.abspath(model_to_load))
             gguf_filename = os.path.basename(model_to_load)
 
@@ -698,13 +713,15 @@ def main():
     # Determina se está avaliando o modelo BF16 Standalone (puro, 16-bits)
     is_bf16_standalone = (
         "BF16" in model_to_load
-        or "CyberRott-v1.2-Standalone" in model_to_load
+        or "Standalone" in model_to_load
         or (not model_to_load.endswith(".gguf") and "safetensors_v2" not in model_to_load and ("CyberRott" in args.model_name or "CyberRott" in model_to_load))
     )
 
+    detected_version = "v1.3" if any(v in model_to_load.lower() or v in args.model_name.lower() for v in ["v1_3", "v1.3", "1.3"]) else "v1.2"
+
     if is_bf16_standalone:
-        sanitized_name = "CyberRott-v1_2-GRPO-BF16"
-        model_display_name = "CyberRott-v1.2-GRPO-BF16"
+        sanitized_name = f"CyberRott-{detected_version.replace('.', '_')}-GRPO-BF16"
+        model_display_name = f"CyberRott-{detected_version}-GRPO-BF16"
     else:
         sanitized_name = args.model_name.replace("/", "_").replace(".", "_")
         model_display_name = args.model_name

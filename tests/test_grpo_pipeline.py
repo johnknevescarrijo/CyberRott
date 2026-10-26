@@ -283,8 +283,8 @@ class TestGRPOArgsAndAutoAdjustment:
         try:
             sys.argv = ["train_grpo.py"]
             args = parse_args()
-            assert args.per_device_train_batch_size == 8
-            assert args.gradient_accumulation_steps == 2
+            assert args.per_device_train_batch_size == 2
+            assert args.gradient_accumulation_steps == 8
             assert args.num_generations == 8
             assert args.max_prompt_length == 768
             assert args.max_completion_length == 1024
@@ -295,7 +295,7 @@ class TestGRPOArgsAndAutoAdjustment:
             assert args.resume_from_checkpoint is None
             assert args.gradient_checkpointing is None
             assert args.use_vllm is False
-            assert args.vllm_gpu_memory_utilization == 0.45
+            assert args.vllm_gpu_memory_utilization == 0.3
         finally:
             sys.argv = sys_argv_backup
 
