@@ -63,13 +63,16 @@ def export_pipeline(
     skip_merge: bool = False,
     standalone_path: str = None,
 ):
+    is_f16 = quant_type.lower() in ["f16", "fp16", "none"]
+    mode_desc = "F16 Puro Não-Quantizado (Precisão Total 16-bit)" if is_f16 else f"Quantização {quant_type}"
+
     print("=" * 70)
-    print("🛡️  CyberRott v1.3 — Pipeline Automatizado de Exportação & Quantização GGUF")
+    print(f"🛡️  CyberRott v1.3 — Pipeline de Exportação GGUF ({mode_desc})")
     print("=" * 70)
     print(f"Modelo Base:      {base_model}")
     print(f"Adaptador SFT:    {sft_adapter or 'Nenhum'}")
     print(f"Adaptador GRPO:   {grpo_adapter}")
-    print(f"Tipo Quantização: {quant_type}")
+    print(f"Formato Alvo:     {mode_desc}")
     print(f"Diretório Destino: {output_dir}")
     print("=" * 70)
 
