@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-CyberRott 1.1 - Pipeline Unificado de Fusão e Preparação de Dados
-(Pilar 1: Zero-API Cost Data Expansion - 100% Open-Source & Community Tiers).
+CyberRott 1.1 - Unified Data Preparation and Fusion Pipeline
+=============================================================
+(Pillar 1: Zero-API Cost Data Expansion - 100% Open-Source & Community Tiers).
 
-Funcionalidades:
-1. Anchor Mixing: Amostras Complexas de Ouro com Upsampling ponderado.
-2. Catálogo Oficial v1.1: Streaming multi-dataset de corpora abertos do Hugging Face:
-   - nvidia/Nemotron-Research-GooseReason-0.7M (Raciocínio lógico & código)
-   - m-a-p/CodeFeedback-Filtered-Instruction (Auditoria de código, memória & refatoração)
-   - open-r1/codeforces-cots / bespokelabs/Bespoke-Stratos-17k (Trajetórias long-CoT)
-   - CyberNative/Code_Vulnerability_Security_DPO (Detecção de vulnerabilidades & patches DPO)
-   - AlicanKiraz0/Cybersecurity-Dataset-v1 (Red/Blue Team, MITRE ATT&CK & Forense)
-3. Scrubber Programático de Recusas de Alinhamento e Remoção de Disclaimers Moralistas.
-4. Formatador Automático para CoT Nativo de 7 Estágios (<think>...</think>).
-5. Desduplicação Determinística por Hash SHA-256 do Prompt de Usuário.
+Functionalities:
+1. Anchor Mixing: Complex Golden Anchors with weighted upsampling (20x).
+2. Official v1.1 Catalog: Streaming multi-dataset ingestion from Hugging Face Hub:
+   - nvidia/Nemotron-Research-GooseReason-0.7M (Deep reasoning & code logic)
+   - m-a-p/CodeFeedback-Filtered-Instruction (Code audit, memory vulnerabilities & refactoring)
+   - open-r1/codeforces-cots / bespokelabs/Bespoke-Stratos-17k (Long-CoT trajectories)
+   - CyberNative/Code_Vulnerability_Security_DPO (Vulnerability detection & DPO patches)
+   - AlicanKiraz0/Cybersecurity-Dataset-v1 (Red/Blue Team, MITRE ATT&CK & forensics)
+3. Programmatic Alignment Refusal Scrubber and Moralizing Disclaimer Cleaner.
+4. Automated 7-Stage Native CoT Formatter (<think>...</think>).
+5. Deterministic SHA-256 Prompt Deduplication.
 """
 
 import os
@@ -27,7 +28,7 @@ import argparse
 from typing import List, Dict, Any, Optional, Set, Tuple
 
 # =============================================================================
-# 1. CATÁLOGO OFICIAL DE DATASETS OPEN-SOURCE CYBERROTT v1.1 (ZERO-API COST)
+# 1. OFFICIAL OPEN-SOURCE DATASET CATALOG (ZERO-API COST)
 # =============================================================================
 
 CYBERROTT_V1_1_DATASETS: Dict[str, Dict[str, Any]] = {
@@ -37,7 +38,7 @@ CYBERROTT_V1_1_DATASETS: Dict[str, Dict[str, Any]] = {
         "target_samples": 1500,
         "requires_cyber_filter": True,
         "domain": "Deep Reasoning & Code Logic",
-        "description": "Corpus principal de raciocínio analítico da NVIDIA com cadeias de dedução formal.",
+        "description": "Primary analytical reasoning corpus from NVIDIA featuring formal multi-step deduction chains.",
         "splits": ["train", "code", "stem", "math"],
     },
     "code_feedback": {
@@ -46,7 +47,7 @@ CYBERROTT_V1_1_DATASETS: Dict[str, Dict[str, Any]] = {
         "target_samples": 1000,
         "requires_cyber_filter": True,
         "domain": "Code Audit, Memory & Refactoring",
-        "description": "Trajetórias de revisão de código, correção de bugs de memória e refatoração segura.",
+        "description": "Source code review trajectories, memory corruption fixes, and defensive refactoring.",
         "splits": ["train"],
     },
     "open_r1": {
@@ -56,7 +57,7 @@ CYBERROTT_V1_1_DATASETS: Dict[str, Dict[str, Any]] = {
         "target_samples": 800,
         "requires_cyber_filter": True,
         "domain": "Long-CoT Reasoning & Trajectories",
-        "description": "Trajetórias abertas de raciocínio comunitário com reflexão longa estruturada.",
+        "description": "Open community long Chain-of-Thought reasoning traces with structured reflections.",
         "splits": ["train"],
     },
     "cyber_native": {
@@ -65,7 +66,7 @@ CYBERROTT_V1_1_DATASETS: Dict[str, Dict[str, Any]] = {
         "target_samples": 500,
         "requires_cyber_filter": False,
         "domain": "Code Vulnerabilities & CWE DPO Patches",
-        "description": "Pares de código vulnerável (rejected) vs seguro (chosen) com classificação CWE.",
+        "description": "Pairwise vulnerable code (rejected) vs. secure implementation (chosen) mapped to CWE taxonomy.",
         "splits": ["train"],
     },
     "cybersecurity_v1": {
@@ -74,43 +75,44 @@ CYBERROTT_V1_1_DATASETS: Dict[str, Dict[str, Any]] = {
         "target_samples": 400,
         "requires_cyber_filter": False,
         "domain": "Red/Blue Team, MITRE ATT&CK & Forensics",
-        "description": "Dataset especializado em táticas ofensivas, defensivas, CVEs e forense digital.",
+        "description": "Domain-specialized dataset covering offensive tactics, defense evasion, CVEs, and digital forensics.",
         "splits": ["train"],
     },
 }
 
 # =============================================================================
-# 2. LISTA PROFUNDA DE TERMOS DE CIBERSEGURANÇA E SISTEMAS OPERACIONAIS
+# 2. IN-DEPTH CYBERSECURITY & SYSTEM LEVEL KEYWORDS LIST
 # =============================================================================
 
 CYBER_KEYWORDS: List[str] = [
-    # Vulnerabilidades e Exploração
+    # Vulnerabilities and Exploitation
     "vulnerability", "exploit", "cve", "cve-", "buffer overflow", "stack overflow",
     "heap overflow", "use-after-free", "out-of-bounds", "format string",
     "race condition", "toctou", "pwn", "shellcode", "rop chain", "ret2libc",
     "privilege escalation", "bypass", "taint analysis", "injection",
     "sql injection", "sqli", "cross-site scripting", "xss", "csrf", "ssrf",
     "command injection", "path traversal", "directory traversal",
-    # Engenharia Reversa e Binários
+    # Reverse Engineering and Binaries
     "reverse engineering", "disassembly", "decompiler", "decompilation",
     "gdb", "radare2", "ghidra", "ida pro", "binwalk", "objdump",
     "elf", "pe binary", "assembly", "x86", "x86_64", "arm64",
-    # Malware e Forense
+    # Malware and Forensics
     "malware", "ransomware", "backdoor", "trojan", "rootkit", "keylogger",
     "botnet", "forensics", "memory dump", "volatility", "sysmon",
     "wireshark", "pcap", "packet analysis", "network traffic", "yara", "sigma",
-    # Redes e Protocolos
+    # Networks and Protocols
     "tcp/ip", "packet", "dns", "dns tunneling", "socket", "http request",
     "firewall", "ids", "ips", "edr", "mitre", "port scan", "nmap",
-    # Criptografia e Autenticação
+    # Cryptography and Authentication
     "cryptography", "rsa", "aes", "elliptic curve", "diffie-hellman",
     "sha256", "jwt", "hash collision", "nonce reuse", "kerberos",
     "active directory", "golden ticket", "silver ticket", "pass-the-hash",
     "authentication", "authorization", "sandbox", "kernel exploit", "container escape"
 ]
 
+
 def compile_cyber_regex(keywords: List[str]) -> re.Pattern:
-    """Compila regex com word-boundary para termos curtos (evitando falsos positivos)."""
+    """Compiles regex with word-boundaries for short terms to eliminate false positives."""
     patterns = []
     for kw in keywords:
         if len(kw) <= 4:
@@ -119,11 +121,11 @@ def compile_cyber_regex(keywords: List[str]) -> re.Pattern:
             patterns.append(re.escape(kw))
     return re.compile("|".join(patterns), re.IGNORECASE)
 
+
 # =============================================================================
-# 3. SCRUBBER DE RECUSAS E DISCLAIMERS MORALISTAS
+# 3. REFUSAL SCRUBBER AND MORALIZING DISCLAIMER CLEANER
 # =============================================================================
 
-# Padrões explícitos de recusa de alinhamento conversacional
 REFUSAL_PATTERNS: List[str] = [
     r"\bas an ai\b",
     r"\bas a language model\b",
@@ -142,7 +144,6 @@ REFUSAL_PATTERNS: List[str] = [
     r"\bresponsible disclosure prohibits me from\b",
 ]
 
-# Disclaimers moralizantes ou sermões desnecessários
 DISCLAIMER_PATTERNS: List[str] = [
     r"(?im)^(?:disclaimer|note|warning|aviso|atenção|important notice)[\s\:\-]+.*?(?:educational purposes?|authorized (?:testing|systems?|environments?)|without (?:prior )?(?:written )?permission|illegal|fins educacionais).*?\n+",
     r"(?im)\n+(?:disclaimer|note|warning|aviso)[\s\:\-]+.*?(?:educational purposes?|authorized (?:testing|systems?|environments?)|without (?:prior )?(?:written )?permission|illegal|fins educacionais).*?$",
@@ -152,8 +153,9 @@ DISCLAIMER_PATTERNS: List[str] = [
     r"(?im)\bdisclaimer:\s*i cannot condone malicious activities\.?\b",
 ]
 
+
 def is_conversational_refusal(text: str) -> bool:
-    """Verifica se a resposta do modelo consiste substancialmente em recusa de alinhamento."""
+    """Verifies whether the response substantially consists of alignment refusals."""
     if not text:
         return True
 
@@ -161,21 +163,22 @@ def is_conversational_refusal(text: str) -> bool:
 
     for pattern in REFUSAL_PATTERNS:
         if re.search(pattern, clean_text, re.IGNORECASE):
-            # Se for resposta curta (< 600 caracteres) com marcador de recusa: descarta
+            # Short response (< 600 chars) with refusal marker: reject
             if len(clean_text) < 600:
                 return True
-            # Se começa com recusa declarada e não possui código técnico formatado: descarta
+            # Starts with refusal statement and lacks formatted code block: reject
             if re.search(r"^(?:i cannot|as an ai|i'm sorry|i apologize)", clean_text, re.IGNORECASE) and "```" not in clean_text:
                 return True
-            # Se possui apenas poucas linhas declaratórias de recusa
+            # Contains only a few refusal declaratory lines: reject
             lines = [l.strip() for l in clean_text.split("\n") if l.strip()]
             if len(lines) <= 4:
                 return True
 
     return False
 
+
 def clean_moralizing_disclaimers(text: str) -> str:
-    """Remove sermões moralistas e disclaimers vazios no início ou fim de respostas técnicas."""
+    """Removes moralizing disclaimers and empty preaching boilerplate at start/end of responses."""
     if not text:
         return text
 
@@ -183,14 +186,14 @@ def clean_moralizing_disclaimers(text: str) -> str:
     for pattern in DISCLAIMER_PATTERNS:
         cleaned = re.sub(pattern, "", cleaned).strip()
 
-    # Normalizar quebras de linha excessivas
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
     return cleaned
 
+
 def scrub_refusal_and_boilerplate(sample: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
-    Aplica o scrubber completo em uma amostra no formato ChatML.
-    Retorna a amostra limpa ou None se a resposta for uma recusa irrecuperável.
+    Applies the full scrubber pipeline to a ChatML sample.
+    Returns cleaned sample or None if the assistant response is an unrecoverable refusal.
     """
     messages = sample.get("messages", [])
     if not messages:
@@ -214,19 +217,20 @@ def scrub_refusal_and_boilerplate(sample: Dict[str, Any]) -> Optional[Dict[str, 
     result["messages"] = cleaned_messages
     return result
 
+
 # =============================================================================
-# 4. FORMATADOR DE RACIOCÍNIO CoT 7-ESTÁGIOS (<think>...</think>)
+# 4. 7-STAGE CoT REASONING FORMATTER (<think>...</think>)
 # =============================================================================
 
 def format_to_cyberrott_cot(text: str, enforce_think: bool = True) -> str:
     """
-    Normaliza tags alternativas (<|begin_of_thought|>, <thought>, <reasoning>)
-    para o formato nativo <think>...</think> do CyberRott e estrutura respostas sem CoT.
+    Normalizes alternative reasoning tags (<|begin_of_thought|>, <thought>, <reasoning>)
+    into canonical <think>...</think> tags and formats unstructured responses into CoT blocks.
     """
     if not text:
         return text
 
-    # 1. Normalizar tags alternativas
+    # 1. Normalize alternative tags
     normalized = text
     normalized = re.sub(r"<\s*\|begin_of_thought\|\s*>", "<think>", normalized, flags=re.IGNORECASE)
     normalized = re.sub(r"<\s*\|end_of_thought\|\s*>", "</think>", normalized, flags=re.IGNORECASE)
@@ -235,17 +239,16 @@ def format_to_cyberrott_cot(text: str, enforce_think: bool = True) -> str:
     normalized = re.sub(r"<\s*reasoning\s*>", "<think>", normalized, flags=re.IGNORECASE)
     normalized = re.sub(r"<\s*/\s*reasoning\s*>", "</think>", normalized, flags=re.IGNORECASE)
 
-    # 2. Se já possui tag <think> e </think> fechada, manter
+    # 2. If balanced tags exist, return directly
     if "<think>" in normalized and "</think>" in normalized:
         return normalized
 
-    # 3. Se possui abertura sem fechamento, fechar adequadamente
+    # 3. If open tag exists without closing tag, close it
     if "<think>" in normalized and "</think>" not in normalized:
         return normalized + "\n</think>"
 
-    # 4. Se não possui tag <think> e enforce_think estiver ativo
+    # 4. If no think tag and enforcement is active
     if enforce_think:
-        # Tenta separar por cabeçalhos típicos de resposta final
         split_patterns = [
             r"\n(?=###\s+(?:Solution|Final Answer|Code|Correction|Remediation|Answer))",
             r"\n(?=\*\*Final Answer\*\*:?)",
@@ -262,29 +265,29 @@ def format_to_cyberrott_cot(text: str, enforce_think: bool = True) -> str:
                 final_answer = parts[1].strip()
                 return f"<think>\n{reasoning}\n</think>\n\n{final_answer}"
 
-        # Se não há cabeçalho explícito, divide entre premissa técnica e solução
         paragraphs = [p.strip() for p in normalized.split("\n\n") if p.strip()]
         if len(paragraphs) >= 2:
             reasoning = paragraphs[0]
             conclusion = "\n\n".join(paragraphs[1:])
-            return f"<think>\n**Análise Técnica**: {reasoning}\n</think>\n\n{conclusion}"
+            return f"<think>\n**Technical Analysis**: {reasoning}\n</think>\n\n{conclusion}"
         else:
-            return f"<think>\n**Análise Preliminar**: Avaliação de parâmetros e mecânica do problema.\n</think>\n\n{normalized}"
+            return f"<think>\n**Preliminary Analysis**: Assessment of parameters and problem mechanics.\n</think>\n\n{normalized}"
 
     return normalized
 
+
 def format_cybernative_dpo_item(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
-    Sintetiza deterministicamente uma amostra de auditoria no formato 7-estágios
-    do CyberRott a partir dos metadados de vulnerabilidade (DPO: chosen vs rejected).
+    Deterministically synthesizes an audit sample in the canonical 7-stage format
+    from DPO vulnerability metadata (chosen vs rejected).
     """
     vulnerability = (
         item.get("vulnerability")
         or item.get("vuln_type")
         or item.get("cwe")
-        or "Vulnerabilidade de Segurança de Código"
+        or "Code Security Vulnerability"
     )
-    lang = item.get("lang") or item.get("language") or "código"
+    lang = item.get("lang") or item.get("language") or "code"
     chosen = item.get("chosen") or item.get("safe_code") or ""
     rejected = item.get("rejected") or item.get("vulnerable_code") or ""
     question = item.get("question") or item.get("prompt") or item.get("instruction") or ""
@@ -292,38 +295,35 @@ def format_cybernative_dpo_item(item: Dict[str, Any]) -> Optional[Dict[str, Any]
     if not chosen and not rejected:
         return None
 
-    # Formatar User Prompt
     if question and rejected and rejected not in question:
         user_prompt = f"{question.strip()}\n\n```{lang}\n{rejected.strip()}\n```"
     elif question:
         user_prompt = question.strip()
     elif rejected:
         user_prompt = (
-            f"Analise o código {lang} abaixo em busca de vulnerabilidades de segurança ({vulnerability}). "
-            f"Apresente seu raciocínio passo a passo identificando pontos de entrada, fluxo de dados inseguro, "
-            f"sinks perigosos e forneça a remediação segura completa.\n\n"
+            f"Analyze the {lang} code below for security vulnerabilities ({vulnerability}). "
+            f"Provide your step-by-step reasoning identifying entry points, insecure data flow, "
+            f"dangerous sinks, and furnish the complete secure remediation.\n\n"
             f"```{lang}\n{rejected.strip()}\n```"
         )
     else:
-        user_prompt = f"Explique a mecânica de exploração e remediação segura para a seguinte vulnerabilidade: {vulnerability}."
+        user_prompt = f"Explain the exploitation mechanics and secure remediation for: {vulnerability}."
 
-    # Síntese determinística nativa dos 7 estágios analíticos CoT
+    # Native synthesis of 7 analytical CoT stages (tested in test_data_prep_v1_1.py)
     cot = (
         f"<think>\n"
-        f"**Surface Analysis**: O componente sob auditoria é implementado em {lang}. "
-        f"A lógica visa manipular dados e executar regras de negócio da aplicação.\n\n"
-        f"**Entry Point / Attack Vector**: O ponto de entrada expõe a superfície de ataque a parâmetros "
-        f"que podem ser controlados por fontes externas sem validação estrita de fronteira ou tipagem segura.\n\n"
-        f"**Data Flow / Internal Mechanics (Taint Analysis)**: Os dados não confiáveis fluem através da "
-        f"lógica do programa sem passar por filtros adequados ou sanitização antes de atingirem funções críticas.\n\n"
-        f"**Vulnerable Sink / Control Flaw Detection**: O fluxo alcança um sink de execução ou consumo de memória inseguro, "
-        f"revelando o padrão clássico de {vulnerability}.\n\n"
-        f"**Sanitization and Mitigation Assessment**: Ausência de checagens defensivas, allowlists ou escaping "
-        f"contextual na implementação examinada. A variante vulnerável falha em aplicar proteções em profundidade.\n\n"
-        f"**Vulnerability Verdict / Anomaly Classification**: O código é classificado como VULNERÁVEL a {vulnerability}. "
-        f"A falha compromete as garantias de segurança do módulo em tempo de execução.\n\n"
-        f"**Potential Impact**: Comprometimento potencial de confidencialidade, integridade ou disponibilidade dos "
-        f"recursos do sistema, dependendo dos privilégios de execução e do contexto de implantação.\n"
+        f"**Surface Analysis**: The target component is implemented in {lang}. "
+        f"The logic operates on inputs and enforces application business constraints.\n\n"
+        f"**Entry Point / Attack Vector**: The entry point exposes attack surface to parameters "
+        f"controlled by external untrusted sources without strict boundary checks.\n\n"
+        f"**Data Flow / Internal Mechanics**: Tainted input propagates across internal routines "
+        f"without adequate intermediate sanitization checkpoints.\n\n"
+        f"**Vulnerable Sink / Control Flaw Detection**: Execution reaches a dangerous sink, "
+        f"manifesting {vulnerability}.\n\n"
+        f"**Sanitization and Mitigation Assessment**: Defensive validation allowlists and contextual "
+        f"escaping are absent in the vulnerable implementation.\n\n"
+        f"**Vulnerability Verdict**: The implementation is confirmed VULNERABLE to {vulnerability}.\n\n"
+        f"**Potential Impact**: Risk of unauthorized confidentiality loss, integrity corruption, or resource exhaustion.\n"
         f"</think>"
     )
 
@@ -338,28 +338,26 @@ def format_cybernative_dpo_item(item: Dict[str, Any]) -> Optional[Dict[str, Any]
         "messages": [
             {
                 "role": "system",
-                "content": "Você é o CyberRott, uma IA especialista em segurança ofensiva, defensiva e análise de vulnerabilidades com raciocínio analítico profundo."
+                "content": "You are CyberRott, a specialized reasoning AI for offensive, defensive, and vulnerability analysis."
             },
             {"role": "user", "content": user_prompt},
             {"role": "assistant", "content": assistant_content}
         ]
     }
 
+
 # =============================================================================
-# 5. EXTRATOR UNIVERSAL DE REGISTROS DO HUGGING FACE
+# 5. UNIVERSAL HUGGING FACE RECORD EXTRACTOR
 # =============================================================================
 
 def extract_qa_from_hf_item(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Inspeciona dinamicamente as colunas de um registro do Hugging Face e formata em ChatML."""
-    # Caso 0: Registro de vulnerabilidade estruturado (CyberNative DPO)
+    """Dynamically inspects columns of a Hugging Face record and formats into ChatML schema."""
     if ("chosen" in item or "rejected" in item) and ("vulnerability" in item or "cwe" in item or "lang" in item):
         return format_cybernative_dpo_item(item)
 
-    # Caso 1: Item já estruturado em messages
     if "messages" in item and isinstance(item["messages"], list):
         return {"messages": item["messages"]}
 
-    # Caso 2: Item em formato de conversação (ex: ShareGPT / Vicuna)
     if "conversations" in item and isinstance(item["conversations"], list):
         role_map = {"human": "user", "gpt": "assistant", "chatgpt": "assistant", "system": "system"}
         msgs = []
@@ -369,7 +367,6 @@ def extract_qa_from_hf_item(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         if msgs:
             return {"messages": msgs}
 
-    # Caso 3: Campos de Pergunta / Problema
     question = (
         item.get("problem")
         or item.get("question")
@@ -381,7 +378,6 @@ def extract_qa_from_hf_item(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         or item.get("text")
     )
 
-    # Identificar resposta (suporte a opções do GooseReason-0.7M)
     options = item.get("options")
     answer_raw = item.get("answer")
     solution_text = None
@@ -391,9 +387,9 @@ def extract_qa_from_hf_item(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         if len(ans_str) == 1 and "A" <= ans_str <= "Z":
             idx = ord(ans_str) - ord("A")
             if 0 <= idx < len(options):
-                solution_text = f"Opção correta: **{ans_str}**\n\n```\n{options[idx]}\n```"
+                solution_text = f"Correct choice: **{ans_str}**\n\n```\n{options[idx]}\n```"
             else:
-                solution_text = f"Opção correta: \\boxed{{{ans_str}}}"
+                solution_text = f"Correct choice: \\boxed{{{ans_str}}}"
 
     if not solution_text:
         solution_text = (
@@ -409,7 +405,7 @@ def extract_qa_from_hf_item(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             "messages": [
                 {
                     "role": "system",
-                    "content": "Você é o CyberRott, uma IA especialista em segurança ofensiva, defensiva e análise de vulnerabilidades com raciocínio analítico profundo."
+                    "content": "You are CyberRott, a specialized reasoning AI for offensive, defensive, and vulnerability analysis."
                 },
                 {"role": "user", "content": str(question).strip()},
                 {"role": "assistant", "content": str(solution_text).strip()}
@@ -418,8 +414,9 @@ def extract_qa_from_hf_item(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
     return None
 
+
 # =============================================================================
-# 6. DESDUPLICAÇÃO POR HASH SHA-256 DO PROMPT
+# 6. SHA-256 PROMPT DEDUPLICATION
 # =============================================================================
 
 def deduplicate_samples(
@@ -427,8 +424,8 @@ def deduplicate_samples(
     preserve_anchors: bool = True
 ) -> List[Dict[str, Any]]:
     """
-    Remove amostras com prompts duplicados entre datasets externos,
-    preservando o upsampling intencional das amostras âncora de ouro.
+    Removes samples with duplicated prompts across external datasets,
+    preserving intentional upsampling for Golden Anchor samples.
     """
     seen_prompts: Set[str] = set()
     deduped: List[Dict[str, Any]] = []
@@ -437,7 +434,6 @@ def deduplicate_samples(
     for item in samples:
         is_anchor = item.get("_is_anchor", False)
 
-        # Extrair user prompt
         prompt = ""
         msgs = item.get("messages", [])
         for m in msgs:
@@ -445,7 +441,6 @@ def deduplicate_samples(
                 prompt = m.get("content", "")
                 break
 
-        # Normalização do prompt para cálculo do hash
         normalized_prompt = re.sub(r"\s+", " ", prompt).strip().lower()
         prompt_hash = hashlib.sha256(normalized_prompt.encode("utf-8")).hexdigest()
 
@@ -462,23 +457,24 @@ def deduplicate_samples(
             deduped.append(clean_item)
 
     if duplicates_count > 0:
-        print(f"[✓] Desduplicação por hash SHA-256: {duplicates_count} prompts duplicados removidos.")
+        print(f"[✓] SHA-256 prompt deduplication: {duplicates_count} duplicate prompts removed.")
 
     return deduped
 
+
 # =============================================================================
-# 7. CARREGAMENTO DAS AMOSTRAS ÂNCORA DE OURO
+# 7. LOADING GOLDEN ANCHOR SAMPLES
 # =============================================================================
 
 def load_anchor_samples(anchor_file: str) -> List[Dict[str, Any]]:
-    """Carrega as amostras âncora no formato padronizado ChatML marcando _is_anchor=True."""
+    """Loads Golden Anchor samples in ChatML schema, tagging them with _is_anchor=True."""
     if not os.path.exists(anchor_file):
         fallback = os.path.join("data", anchor_file)
         if os.path.exists(fallback):
-            print(f"[*] Fallback de âncora: '{anchor_file}' -> '{fallback}'")
+            print(f"[*] Anchor fallback: '{anchor_file}' -> '{fallback}'")
             anchor_file = fallback
         else:
-            print(f"[Aviso] Arquivo âncora '{anchor_file}' não encontrado.")
+            print(f"[Warning] Anchor file '{anchor_file}' not found.")
             return []
 
     samples = []
@@ -509,19 +505,20 @@ def load_anchor_samples(anchor_file: str) -> List[Dict[str, Any]]:
                     samples.append({
                         "_is_anchor": True,
                         "messages": [
-                            {"role": "system", "content": "Você é o CyberRott, uma IA especialista em segurança ofensiva, defensiva e análise de vulnerabilidades com raciocínio analítico profundo."},
+                            {"role": "system", "content": "You are CyberRott, a specialized reasoning AI for offensive, defensive, and vulnerability analysis."},
                             {"role": "user", "content": prompt},
                             {"role": "assistant", "content": assistant_content}
                         ]
                     })
             except Exception as e:
-                print(f"[Aviso] Falha ao processar linha {idx} do arquivo âncora: {e}")
+                print(f"[Warning] Failed to process line {idx} in anchor file: {e}")
                 continue
 
     return samples
 
+
 # =============================================================================
-# 8. STREAMING E INGESTÃO DO HUGGING FACE
+# 8. HUGGING FACE STREAMING & INGESTION
 # =============================================================================
 
 def fetch_single_dataset_stream(
@@ -532,14 +529,14 @@ def fetch_single_dataset_stream(
     scrub_refusals: bool = True,
     enforce_think: bool = True
 ) -> List[Dict[str, Any]]:
-    """Carrega via streaming um dataset do Hugging Face aplicando filtragem e padronização."""
+    """Streams a Hugging Face dataset applying domain filtering, refusal scrubbing, and CoT formatting."""
     collected = []
-    print(f"[*] Conectando ao Hugging Face para streaming do dataset '{dataset_name}'...")
+    print(f"[*] Connecting to Hugging Face Hub to stream '{dataset_name}'...")
 
     try:
         from datasets import load_dataset
     except ImportError:
-        print("[Aviso] Biblioteca 'datasets' não instalada. Execute 'pip install datasets'.")
+        print("[Warning] 'datasets' library is not installed. Run 'pip install datasets'.")
         return []
 
     splits = candidate_splits or ["train", "code", "stem", "math"]
@@ -547,7 +544,7 @@ def fetch_single_dataset_stream(
     for split_choice in splits:
         try:
             ds = load_dataset(dataset_name, split=split_choice, streaming=True)
-            print(f"[✓] Streaming iniciado com sucesso via split='{split_choice}'.")
+            print(f"[✓] Streaming established via split='{split_choice}'.")
             break
         except Exception:
             continue
@@ -557,9 +554,9 @@ def fetch_single_dataset_stream(
             ds_dict = load_dataset(dataset_name, streaming=True)
             active_split = "code" if "code" in ds_dict else list(ds_dict.keys())[0]
             ds = ds_dict[active_split]
-            print(f"[✓] Streaming iniciado via split dinâmico='{active_split}'.")
+            print(f"[✓] Streaming established via dynamic split='{active_split}'.")
         except Exception as e:
-            print(f"[Aviso] Não foi possível inicializar streaming de '{dataset_name}': {e}")
+            print(f"[Warning] Unable to initialize streaming for '{dataset_name}': {e}")
             return []
 
     count = 0
@@ -569,10 +566,10 @@ def fetch_single_dataset_stream(
         for item in ds:
             checked += 1
             if checked > max_checked_items:
-                print(f"[!] Limite máximo de inspeções ({max_checked_items:,}) atingido para '{dataset_name}'. Finalizando coleta com {count} amostras.")
+                print(f"[!] Maximum inspection threshold ({max_checked_items:,}) reached for '{dataset_name}'. Concluding with {count} samples.")
                 break
 
-            # Filtragem de segurança se exigida
+            # Domain keyword filtering
             if cyber_regex is not None:
                 text_parts = []
                 for v in item.values():
@@ -588,19 +585,19 @@ def fetch_single_dataset_stream(
                 if not cyber_regex.search(full_text):
                     continue
 
-            # Formatação para ChatML
+            # Format to ChatML
             formatted = extract_qa_from_hf_item(item)
             if not formatted:
                 continue
 
-            # Scrubber de recusas e disclaimers
+            # Scrub refusals and moralizing boilerplate
             if scrub_refusals:
                 scrubbed = scrub_refusal_and_boilerplate(formatted)
                 if not scrubbed:
                     continue
                 formatted = scrubbed
 
-            # Enforcing de tags <think>
+            # Enforce <think> deliberation tags
             if enforce_think:
                 msgs = formatted.get("messages", [])
                 for m in msgs:
@@ -610,14 +607,15 @@ def fetch_single_dataset_stream(
             collected.append(formatted)
             count += 1
             if count % 100 == 0:
-                print(f"[*] Ingestão '{dataset_name}': {count}/{max_samples} amostras (analisadas {checked})...")
+                print(f"[*] Ingestion '{dataset_name}': {count}/{max_samples} samples (inspected {checked})...")
             if count >= max_samples:
                 break
     except Exception as e:
-        print(f"[Aviso] Interrupção durante o streaming de '{dataset_name}': {e}")
+        print(f"[Warning] Interruption during streaming of '{dataset_name}': {e}")
 
-    print(f"[✓] Concluído '{dataset_name}': {len(collected)} amostras coletadas com sucesso.")
+    print(f"[✓] Completed '{dataset_name}': {len(collected)} samples successfully ingested.")
     return collected
+
 
 def fetch_hf_cyber_samples(
     dataset_name: str,
@@ -626,7 +624,7 @@ def fetch_hf_cyber_samples(
     scrub_refusals: bool = False,
     enforce_think: bool = False
 ) -> List[Dict[str, Any]]:
-    """Função legada mantida para retrocompatibilidade total com a v1.0."""
+    """Legacy function maintained for backwards compatibility with v1.0."""
     return fetch_single_dataset_stream(
         dataset_name=dataset_name,
         max_samples=max_samples,
@@ -636,6 +634,7 @@ def fetch_hf_cyber_samples(
         enforce_think=enforce_think
     )
 
+
 def fetch_multi_hf_datasets(
     dataset_keys: List[str],
     cyber_regex: re.Pattern,
@@ -643,12 +642,12 @@ def fetch_multi_hf_datasets(
     scrub_refusals: bool = True,
     enforce_think: bool = True
 ) -> List[Dict[str, Any]]:
-    """Coleta e agrega amostras de múltiplos datasets do catálogo v1.1."""
+    """Aggregates samples from multiple datasets in the official catalog."""
     all_hf_samples = []
 
     for key in dataset_keys:
         if key not in CYBERROTT_V1_1_DATASETS:
-            print(f"[Aviso] Dataset '{key}' desconhecido no catálogo. Ignorando.")
+            print(f"[Warning] Dataset key '{key}' unknown in catalog. Skipping.")
             continue
 
         cfg = CYBERROTT_V1_1_DATASETS[key]
@@ -656,7 +655,7 @@ def fetch_multi_hf_datasets(
         repo = cfg["repo_id"]
         use_regex = cyber_regex if cfg["requires_cyber_filter"] else None
 
-        print(f"\n---> Coletando [{cfg['name']}] (Alvo: {target} amostras | Domínio: {cfg['domain']})")
+        print(f"\n---> Ingesting [{cfg['name']}] (Target: {target} samples | Domain: {cfg['domain']})")
 
         samples = fetch_single_dataset_stream(
             dataset_name=repo,
@@ -667,10 +666,9 @@ def fetch_multi_hf_datasets(
             enforce_think=enforce_think
         )
 
-        # Fallback se aplicável e se a coleta do repo principal falhou totalmente
         if not samples and "fallback_repo_id" in cfg:
             fallback_repo = cfg["fallback_repo_id"]
-            print(f"[!] Tentando repositório de fallback: '{fallback_repo}'...")
+            print(f"[!] Attempting fallback repository: '{fallback_repo}'...")
             samples = fetch_single_dataset_stream(
                 dataset_name=fallback_repo,
                 max_samples=target,
@@ -684,29 +682,31 @@ def fetch_multi_hf_datasets(
 
     return all_hf_samples
 
+
 # =============================================================================
-# 9. EXIBIÇÃO DO CATÁLOGO DE DATASETS CLI (--list_datasets)
+# 9. DATASET CATALOG DISPLAY CLI (--list_datasets)
 # =============================================================================
 
 def print_dataset_catalog():
-    """Imprime a tabela descritiva do catálogo v1.1 de datasets open-source."""
+    """Prints descriptive table of the official Zero-API Cost dataset catalog."""
     total_target = sum(cfg["target_samples"] for cfg in CYBERROTT_V1_1_DATASETS.values())
     header = "=" * 105
     print("\n" + header)
-    print("🛡️  CYBERROTT 1.1 - CATÁLOGO OFICIAL DE DATASETS ZERO-API COST (ROADMAP v1.1)")
+    print("🛡️  CYBERROTT 1.1 - CATÁLOGO OFICIAL DE DATASETS ZERO-API COST (OFFICIAL DATASET CATALOG)")
     print(header)
-    print(f"{'CHAVE':<16} {'HF REPOSITORY':<44} {'ALVO (v1.1)':<12} {'FILTRO CYBER':<14} {'DOMÍNIO TÉCNICO'}")
+    print(f"{'KEY':<16} {'HF REPOSITORY':<44} {'TARGET (v1.1)':<14} {'CYBER FILTER':<14} {'TECHNICAL DOMAIN'}")
     print("-" * 105)
     for key, cfg in CYBERROTT_V1_1_DATASETS.items():
-        filter_str = "Sim" if cfg["requires_cyber_filter"] else "Não (Nativo)"
-        print(f"{key:<16} {cfg['repo_id']:<44} {cfg['target_samples']:<12} {filter_str:<14} {cfg['domain']}")
+        filter_str = "Yes" if cfg["requires_cyber_filter"] else "No (Native)"
+        print(f"{key:<16} {cfg['repo_id']:<44} {cfg['target_samples']:<14} {filter_str:<14} {cfg['domain']}")
     print("-" * 105)
-    print(f"TOTAL ALVO EXTERNO: ~{total_target:,} sequências de alta densidade analítica.")
-    print(f"TOTAL COM ÂNCORAS DE OURO: ~{total_target + 320:,} sequências (dataset balanceado de alta densidade do Roadmap v1.1).")
+    print(f"TOTAL ALVO EXTERNO: ~{total_target:,} high-density analytical sequences.")
+    print(f"TOTAL WITH GOLD ANCHORS: ~{total_target + 320:,} sequences (balanced high-density dataset).")
     print(header + "\n")
 
+
 # =============================================================================
-# 10. PIPELINE PRINCIPAL DE PREPARAÇÃO E FUSÃO (prepare_dataset)
+# 10. MAIN PREPARATION AND FUSION PIPELINE (prepare_dataset)
 # =============================================================================
 
 def prepare_dataset(
@@ -723,43 +723,42 @@ def prepare_dataset(
     goose_limit: Optional[int] = None
 ) -> List[Dict[str, Any]]:
     """
-    Função principal de preparação e fusão de dados do CyberRott:
-    - Fallback inteligente se anchor_file não existir diretamente (ex: busca em 'data/').
-    - Ingestão do catálogo aberto v1.1 (~4.5k-5k amostras CoT) ou streaming v1.0.
-    - Scrubber de recusas e remoção de disclaimers moralistas.
-    - Normalização de tags CoT para <think>...</think>.
-    - Desduplicação determinística com preservação de âncoras de ouro.
-    - Criação garantida do diretório de destino e exportação JSONL.
+    Main CyberRott training dataset preparation and fusion pipeline:
+    - Automatic fallback if anchor_file is not in root path (searches in 'data/').
+    - Catalog multi-dataset streaming (v1.1) or single-dataset streaming (v1.0).
+    - Refusal scrubbing and moralizing disclaimer removal.
+    - Tag normalization into canonical <think>...</think> schema.
+    - Deterministic deduplication with Golden Anchor preservation.
+    - Shuffling and export to target JSONL file.
     """
     if goose_limit is not None:
         CYBERROTT_V1_1_DATASETS["goose_reason"]["target_samples"] = goose_limit
 
-    # Fallback automático se anchor_file não existir no caminho especificado
     if not os.path.exists(anchor_file):
         fallback_candidate = os.path.join("data", anchor_file)
         if os.path.exists(fallback_candidate):
-            print(f"[*] Fallback de âncora aplicado em prepare_dataset: '{anchor_file}' -> '{fallback_candidate}'")
+            print(f"[*] Anchor fallback applied in prepare_dataset: '{anchor_file}' -> '{fallback_candidate}'")
             anchor_file = fallback_candidate
 
     print("=" * 75)
-    print(f"🛡️  CyberRott Pipeline de Fusão de Dados de Treinamento (Preset: {preset.upper()})")
+    print(f"🛡️  CyberRott Training Data Fusion Pipeline (Preset: {preset.upper()})")
     print("=" * 75)
-    print(f"• Arquivo Âncora: {anchor_file} (Upsampling: {anchor_repeat}x)")
-    print(f"• Saída Final:    {output_file}")
+    print(f"• Anchor File:    {anchor_file} (Upsampling: {anchor_repeat}x)")
+    print(f"• Target Output:  {output_file}")
     print(f"• Random Seed:    {seed}")
-    print(f"• Scrub Refusals: {'Ativado' if scrub_refusals else 'Desativado'}")
-    print(f"• Enforce <think>: {'Ativado' if enforce_think else 'Desativado'}")
+    print(f"• Scrub Refusals: {'Enabled' if scrub_refusals else 'Disabled'}")
+    print(f"• Enforce <think>:{'Enabled' if enforce_think else 'Disabled'}")
     if goose_limit is not None:
         print(f"• Goose Limit:    {goose_limit}")
     print("-" * 75)
 
-    # 1. Carregar Amostras Âncora
+    # 1. Load Anchor Samples
     raw_anchors = load_anchor_samples(anchor_file)
     unique_anchor_count = len(raw_anchors)
     anchor_samples = raw_anchors * anchor_repeat
-    print(f"[✓] Âncoras carregadas: {unique_anchor_count} únicas -> {len(anchor_samples)} após upsampling ({anchor_repeat}x).")
+    print(f"[✓] Anchors loaded: {unique_anchor_count} unique -> {len(anchor_samples)} after upsampling ({anchor_repeat}x).")
 
-    # 2. Reuso Otimizado da Base v1.0 Local (GooseReason pré-existente)
+    # 2. Local Base Reuse
     local_base_samples: List[Dict[str, Any]] = []
     reusing_local_v1 = False
 
@@ -786,14 +785,14 @@ def prepare_dataset(
                         except Exception:
                             continue
             except Exception as e:
-                print(f"[Aviso] Falha ao inspecionar base v1.0 local '{candidate_base}': {e}")
+                print(f"[Warning] Failed to inspect local base '{candidate_base}': {e}")
                 temp_samples = []
 
             if len(temp_samples) >= 2000:
                 reusing_local_v1 = True
                 print(
-                    f"[✓] Base v1.0 detectada localmente ({len(temp_samples)} amostras)! "
-                    f"Reutilizando GooseReason local e baixando apenas os 4 novos datasets da v1.1..."
+                    f"[✓] Local v1.0 base detected ({len(temp_samples)} samples)! "
+                    f"Reusing local GooseReason and downloading only the 4 new v1.1 datasets..."
                 )
                 for item in temp_samples:
                     if scrub_refusals:
@@ -808,7 +807,7 @@ def prepare_dataset(
                                 m["content"] = format_to_cyberrott_cot(m.get("content", ""), enforce_think=True)
                     local_base_samples.append(item)
 
-    # 3. Ingestão de Datasets do Hugging Face
+    # 3. Stream Datasets from Hugging Face Hub
     cyber_regex = compile_cyber_regex(CYBER_KEYWORDS)
     hf_samples = []
 
@@ -816,9 +815,9 @@ def prepare_dataset(
         active_keys = dataset_keys or list(CYBERROTT_V1_1_DATASETS.keys())
         if reusing_local_v1:
             active_keys = [k for k in active_keys if k != "goose_reason"]
-            print(f"[*] Reuso local ativo: GooseReason omitido do download. Datasets remanescentes: {active_keys}")
+            print(f"[*] Local reuse active: GooseReason omitted. Remaining datasets: {active_keys}")
         else:
-            print(f"[*] Modo v1.1 Ativado: Processando {len(active_keys)} datasets do catálogo...")
+            print(f"[*] Mode v1.1 Active: Processing {len(active_keys)} datasets from catalog...")
 
         if active_keys:
             hf_samples = fetch_multi_hf_datasets(
@@ -828,11 +827,10 @@ def prepare_dataset(
                 enforce_think=enforce_think
             )
     else:
-        # Modo clássico v1.0 (retrocompatibilidade)
         target_repo = hf_dataset or "nvidia/Nemotron-Research-GooseReason-0.7M"
         limit = goose_limit if goose_limit is not None else max_hf_samples
         if limit > 0:
-            print(f"[*] Modo v1.0 Clássico: Ingestão de '{target_repo}' (máx: {limit})...")
+            print(f"[*] Classic v1.0 Mode: Ingestion of '{target_repo}' (max: {limit})...")
             try:
                 hf_samples = fetch_single_dataset_stream(
                     dataset_name=target_repo,
@@ -842,21 +840,21 @@ def prepare_dataset(
                     enforce_think=enforce_think
                 )
             except Exception as e:
-                print(f"[Aviso] Falha de conexão ou erro no Hugging Face: {e}")
+                print(f"[Warning] Connection failure or error from Hugging Face: {e}")
 
-    # 4. Combinar e Desduplicar
+    # 4. Combine and Deduplicate
     combined = anchor_samples + local_base_samples + hf_samples
     if not combined:
-        print("[Erro Crítico] Nenhuma amostra disponível para compor o dataset de treinamento!")
+        print("[Critical Error] No samples available to compose training dataset!")
         return []
 
     deduped_samples = deduplicate_samples(combined, preserve_anchors=True)
 
-    # 5. Embaralhamento Determinístico
+    # 5. Deterministic Shuffling
     random.seed(seed)
     random.shuffle(deduped_samples)
 
-    # 6. Gravação em Disco (garantindo diretório pai)
+    # 6. Save to Disk
     output_dir = os.path.dirname(os.path.abspath(output_file))
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
@@ -865,107 +863,103 @@ def prepare_dataset(
         for entry in deduped_samples:
             f_out.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
-    # 7. Relatório Final Consolidado
+    # 7. Final Consolidated Report
     print("\n" + "=" * 75)
-    print("📊 RELATÓRIO CONSOLIDADO DO DATASET DE TREINAMENTO")
+    print("📊 CONSOLIDATED TRAINING DATASET REPORT")
     print("=" * 75)
-    print(f"• Preset Executado:                         {preset.upper()}")
-    print(f"• Total de Âncoras de Ouro (únicas):        {unique_anchor_count}")
-    print(f"• Fator de Upsampling das Âncoras:          {anchor_repeat}x")
-    print(f"• Total de Amostras Âncora no Treino:       {len(anchor_samples)}")
+    print(f"• Executed Preset:                          {preset.upper()}")
+    print(f"• Unique Golden Anchors:                    {unique_anchor_count}")
+    print(f"• Anchor Upsampling Factor:                 {anchor_repeat}x")
+    print(f"• Total Anchor Samples in Training:         {len(anchor_samples)}")
     if reusing_local_v1:
-        print(f"• Amostras Base v1.0 Reutilizadas (Local):  {len(local_base_samples)}")
-    print(f"• Total de Amostras Hugging Face Coletadas: {len(hf_samples)}")
-    print(f"• TOTAL FINAL DESDUPLICADO E EMBARALHADO:   {len(deduped_samples)}")
-    print(f"• Arquivo Gerado:                           {output_file}")
+        print(f"• Reused Local Base Samples:                {len(local_base_samples)}")
+    print(f"• Total Hugging Face Samples Ingested:      {len(hf_samples)}")
+    print(f"• FINAL TOTAL DEDUPLICATED AND SHUFFLED:    {len(deduped_samples)}")
+    print(f"• Output File:                              {output_file}")
     print("=" * 75 + "\n")
 
     return deduped_samples
 
 
-# Alias para retrocompatibilidade
 run_fusion_pipeline = prepare_dataset
 
 
 # =============================================================================
-# 11. INTERFACE DE LINHA DE COMANDO (CLI)
+# 11. COMMAND LINE INTERFACE (CLI)
 # =============================================================================
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Pipeline de Fusão e Preparação de Dados para o CyberRott (v1.0 & v1.1)"
+        description="CyberRott Training Data Preparation and Fusion Pipeline (v1.0 & v1.1)"
     )
 
-    # Controle de Versão / Preset
     parser.add_argument(
         "--preset",
         choices=["v1.0", "v1.1"],
         default="v1.0",
-        help="Preset de dados: 'v1.0' (GooseReason clássico 2.5k) ou 'v1.1' (Multi-Dataset ~10k CoT)"
+        help="Dataset preset: 'v1.0' (GooseReason classic 2.5k) or 'v1.1' (Multi-Dataset ~10k CoT)"
     )
     parser.add_argument(
         "--list_datasets",
         action="store_true",
-        help="Exibe o catálogo oficial de datasets do Roadmap v1.1 e encerra a execução"
+        help="Displays the official v1.1 dataset catalog and exits"
     )
     parser.add_argument(
         "--datasets",
         nargs="+",
-        help="Lista customizada de chaves do catálogo para ingestão (ex: goose_reason code_feedback cyber_native)"
+        help="Custom list of catalog keys to ingest (e.g. goose_reason code_feedback cyber_native)"
     )
 
-    # Parâmetros Legados e de Configuração
     parser.add_argument(
         "--anchor_file", "--anchor-file",
         dest="anchor_file",
         default="dataset_cyber_ready.jsonl",
-        help="Caminho do arquivo com os 16 exemplos complexos de ouro"
+        help="Path to JSONL file containing the 16 complex Golden Anchors"
     )
     parser.add_argument(
         "--anchor_repeat", "--anchor-repeat",
         dest="anchor_repeat",
         type=int,
         default=20,
-        help="Fator de repetição (upsampling) para as amostras âncora (default: 20 -> 320 amostras)"
+        help="Upsampling factor for Golden Anchors (default: 20 -> 320 samples)"
     )
     parser.add_argument(
         "--hf_dataset", "--hf-dataset",
         dest="hf_dataset",
         default="nvidia/Nemotron-Research-GooseReason-0.7M",
-        help="Dataset no Hugging Face para streaming (usado no modo v1.0 ou override)"
+        help="Hugging Face dataset repository for streaming (v1.0 mode or override)"
     )
     parser.add_argument(
         "--max_hf_samples", "--max-hf-samples",
         dest="max_hf_samples",
         type=int,
         default=2500,
-        help="Quantidade máxima de amostras a extrair do Hugging Face no modo v1.0"
+        help="Maximum samples to stream from Hugging Face in v1.0 mode"
     )
     parser.add_argument(
         "--output", "--output_file", "--output-file",
         dest="output",
         default="cyberrott_final_train.jsonl",
-        help="Caminho do arquivo JSONL de saída final"
+        help="Target output JSONL file path"
     )
     parser.add_argument(
         "--seed",
         type=int,
         default=42,
-        help="Seed para reproduzibilidade do embaralhamento (shuffling)"
+        help="Random seed for reproducible shuffling"
     )
 
-    # Flags de Higienização e CoT
     parser.add_argument(
         "--scrub_refusals",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Ativar/desativar scrubber de recusas conversacionais e disclaimers moralistas"
+        help="Enable/disable refusal and disclaimer scrubber"
     )
     parser.add_argument(
         "--enforce_think_tags",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Garantir e estruturar blocos <think>...</think> de raciocínio CoT em todas as respostas"
+        help="Enforce and structure <think>...</think> CoT blocks across all assistant responses"
     )
 
     parser.add_argument(
@@ -973,7 +967,7 @@ if __name__ == "__main__":
         dest="goose_limit",
         type=int,
         default=None,
-        help="Limite customizado de amostras para o GooseReason (sobrescreve target_samples padrão de goose_reason)"
+        help="Custom sample limit for GooseReason (overrides default target_samples for goose_reason)"
     )
 
     args = parser.parse_args()
@@ -998,4 +992,3 @@ if __name__ == "__main__":
         seed=args.seed,
         goose_limit=args.goose_limit
     )
-

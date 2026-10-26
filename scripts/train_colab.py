@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Script de Treinamento Fine-Tuning LoRA / SFT para o CyberRott 1.0
-Baseado em microsoft/Phi-4-mini-instruct (3.8B) usando TRL, PEFT e Transformers.
-Compatível com GPUs L4 (24GB), A100/H100 (40/80GB) no Google Colab Pro / Pro+.
+CyberRott 1.0 - LoRA / SFT Fine-Tuning Training Pipeline
+========================================================
+Based on microsoft/Phi-4-mini-instruct (3.82B) using TRL, PEFT, and Transformers.
+Compatible with NVIDIA L4 (24GB) and A100/H100 (40/80GB) GPUs on Google Colab Pro / Pro+.
 """
 
 import os
@@ -13,11 +14,11 @@ import argparse
 from typing import Optional, Dict, Any
 import torch
 
-# Otimizações de alocação de memória CUDA e desativação do W&B
+# CUDA memory allocation optimizations and W&B deactivation
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 os.environ["WANDB_DISABLED"] = "true"
 
-# Limpeza prévia de VRAM
+# Pre-emptive VRAM cleanup
 gc.collect()
 if torch.cuda.is_available():
     torch.cuda.empty_cache()
@@ -33,10 +34,10 @@ from trl import SFTTrainer, SFTConfig
 
 def setup_hardware_optimizations(args: Optional[argparse.Namespace] = None) -> Dict[str, Any]:
     """
-    Detecta e aplica acelerações de hardware de última geração para GPUs modernas (A100, H100, L4):
-    - TF32 em cuDNN e matmul (acelera até 3x operações de tensores sem perda de precisão)
-    - Preserva micro-batch em 2 e grad_accum em 8 (devido ao vocabulário de 200k tokens do Phi-4)
-    - Detecção e preferência automática por FlashAttention-2
+    Detects and applies modern hardware accelerations for modern GPUs (A100, H100, L4):
+    - TF32 across cuDNN and matmul (up to 3x tensor throughput without precision loss)
+    - Preserves micro-batch at 2 and grad_accum at 8 (due to Phi-4's 200k vocabulary)
+    - Automatic detection and preference for FlashAttention-2
     """
     profile: Dict[str, Any] = {
         "device_name": "CPU",
@@ -48,7 +49,7 @@ def setup_hardware_optimizations(args: Optional[argparse.Namespace] = None) -> D
     if not torch.cuda.is_available():
         return profile
 
-    # Ativação de TF32 para arquiteturas Ampere / Ada / Hopper (A100, H100, L4, RTX 30/40)
+    # Enable TF32 for Ampere / Ada / Hopper architectures (A100, H100, L4, RTX 30/40)
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
 
@@ -69,178 +70,178 @@ def setup_hardware_optimizations(args: Optional[argparse.Namespace] = None) -> D
 
     if args is not None and getattr(args, "auto_optimize", True):
         if profile["is_high_vram"]:
-            # NOTA: O micro-batch DEVE permanecer em 2 (com gradient_accumulation_steps=8) mesmo em A100 40GB,
-            # pois o vocabulário de 200.064 tokens do Phi-4 gera tensores de logits em FP32 de tamanho
-            # [batch * seq_len * 200064 * 4 bytes]. Um batch=4 com seq_len longo causaria OOM de ~12.2 GiB
-            # na ForCausalLMLoss.
+            # NOTE: Micro-batch MUST remain 2 (with gradient_accumulation_steps=8) even on A100 40GB,
+            # because Phi-4's 200,064-token vocabulary generates FP32 logit tensors of size
+            # [batch * seq_len * 200064 * 4 bytes]. batch=4 with long seq_len induces ~12.2 GiB OOM
+            # in ForCausalLMLoss.
             if args.attn_implementation == "sdpa" and profile["recommended_attn"] == "flash_attention_2":
                 args.attn_implementation = "flash_attention_2"
-                print("[Auto-Otimização A100] Ativado 'flash_attention_2' automaticamente.")
+                print("[A100 Auto-Optimization] Automatically activated 'flash_attention_2'.")
 
     return profile
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="CyberRott 1.0 - Treinamento LoRA / SFT com Phi-4-mini-instruct"
+        description="CyberRott 1.0 - LoRA / SFT Training with Phi-4-mini-instruct"
     )
 
-    # Argumentos do Modelo
-    model_group = parser.add_argument_group("Modelo")
+    # Model Arguments
+    model_group = parser.add_argument_group("Model")
     model_group.add_argument(
         "--model_name_or_path",
         type=str,
         default="microsoft/Phi-4-mini-instruct",
-        help="Identificador do modelo base no Hugging Face Hub ou diretório local."
+        help="Base model identifier on Hugging Face Hub or local path."
     )
     model_group.add_argument(
         "--torch_dtype",
         type=str,
         default="bfloat16",
         choices=["bfloat16", "float16", "float32"],
-        help="Precisão do modelo base (padrão: bfloat16 para GPUs modernas)."
+        help="Base model numerical precision (default: bfloat16 for modern GPUs)."
     )
     model_group.add_argument(
         "--attn_implementation",
         type=str,
         default="flash_attention_2",
         choices=["flash_attention_2", "sdpa", "eager"],
-        help="Implementação de atenção: flash_attention_2 ou sdpa (Scaled Dot-Product nativo)."
+        help="Attention implementation: flash_attention_2 or sdpa (native Scaled Dot-Product)."
     )
 
-    # Argumentos dos Dados
+    # Data Arguments
     data_group = parser.add_argument_group("Dataset")
     data_group.add_argument(
         "--dataset_name",
         type=str,
         default=None,
-        help="Nome do dataset no Hugging Face Hub (se aplicável)."
+        help="Dataset name on Hugging Face Hub (if applicable)."
     )
     data_group.add_argument(
         "--data_file", "--data_path",
         type=str,
         dest="data_file",
         default="cyberrott_final_train.jsonl",
-        help="Caminho do arquivo JSONL local com os dados de treino."
+        help="Local JSONL file path containing training data."
     )
     data_group.add_argument(
         "--max_seq_length",
         type=int,
         default=2048,
-        help="Janela máxima de contexto para treinamento (ex: 2048 ou 4096)."
+        help="Maximum sequence context window for training (default: 2048)."
     )
 
-    # Argumentos LoRA
+    # LoRA / PEFT Arguments
     lora_group = parser.add_argument_group("LoRA / PEFT")
     lora_group.add_argument(
         "--lora_r",
         type=int,
         default=32,
-        help="Rank da matriz LoRA (padrão: 32)."
+        help="LoRA rank dimension (default: 32)."
     )
     lora_group.add_argument(
         "--lora_alpha",
         type=int,
         default=64,
-        help="Fator Alpha de escala LoRA (padrão: 64, normalmente 2x o rank)."
+        help="LoRA alpha scaling factor (default: 64, typically 2x rank)."
     )
     lora_group.add_argument(
         "--lora_dropout",
         type=float,
         default=0.05,
-        help="Taxa de Dropout para LoRA (padrão: 0.05)."
+        help="LoRA dropout rate (default: 0.05)."
     )
     lora_group.add_argument(
         "--target_modules",
         type=str,
         default="all-linear",
         help=(
-            "Módulos alvo para LoRA. Use 'all-linear' para cobrir qkv_proj, o_proj, "
-            "gate_up_proj e down_proj do Phi-4, ou lista separada por vírgula."
+            "Target modules for LoRA. Use 'all-linear' to cover qkv_proj, o_proj, "
+            "gate_up_proj, and down_proj on Phi-4, or provide comma-separated list."
         )
     )
 
-    # Argumentos de Treinamento / SFTConfig
-    train_group = parser.add_argument_group("Hiperparâmetros de Treinamento")
+    # Training / SFTConfig Arguments
+    train_group = parser.add_argument_group("Training Hyperparameters")
     train_group.add_argument(
         "--output_dir",
         type=str,
         default="./CyberRott-Phi4-LoRA",
-        help="Diretório onde os pesos adaptadores LoRA serão salvos."
+        help="Directory where LoRA adapter weights will be saved."
     )
     train_group.add_argument(
         "--num_train_epochs", "--epochs",
         type=int,
         dest="num_train_epochs",
         default=3,
-        help="Número total de épocas de treinamento."
+        help="Total number of training epochs (default: 3)."
     )
     train_group.add_argument(
         "--per_device_train_batch_size",
         type=int,
         default=2,
-        help="Batch size por GPU (2 para evitar OOM na cross_entropy com vocab 200k; 4 a 8 em 80GB)."
+        help="Per-GPU batch size (2 to prevent OOM in cross_entropy with 200k vocab; 4 to 8 on 80GB)."
     )
     train_group.add_argument(
         "--gradient_accumulation_steps",
         type=int,
         default=8,
-        help="Passos de acumulação de gradiente (batch efetivo = batch_size * grad_accum = 16)."
+        help="Gradient accumulation steps (effective batch = batch_size * grad_accum = 16)."
     )
     train_group.add_argument(
         "--gradient_checkpointing",
         action="store_true",
         default=True,
-        help="Ativa gradient checkpointing para reduzir uso de VRAM de ativações (padrão: True)."
+        help="Enable gradient checkpointing to reduce activation VRAM (default: True)."
     )
     train_group.add_argument(
         "--report_to",
         type=str,
         default="none",
-        help="Ferramenta de rastreamento/métricas (padrão: none para evitar prompt do wandb)."
+        help="Tracking/metrics logging platform (default: none to avoid wandb prompts)."
     )
     train_group.add_argument(
         "--learning_rate",
         type=float,
         default=2e-4,
-        help="Taxa de aprendizado (Learning Rate)."
+        help="Optimizer learning rate (default: 2e-4)."
     )
     train_group.add_argument(
         "--lr_scheduler_type",
         type=str,
         default="cosine",
-        help="Tipo de escalonador de LR (cosine, linear, etc.)."
+        help="Learning rate scheduler type (cosine, linear, etc.)."
     )
     train_group.add_argument(
         "--warmup_ratio",
         type=float,
         default=0.05,
-        help="Fração de passos para warmup."
+        help="Fraction of training steps dedicated to linear warmup."
     )
     train_group.add_argument(
         "--logging_steps",
         type=int,
         default=10,
-        help="Intervalo de passos para logging de perda (loss)."
+        help="Step interval for loss logging."
     )
     train_group.add_argument(
         "--save_strategy",
         type=str,
         default="epoch",
         choices=["epoch", "steps", "no"],
-        help="Estratégia de salvamento de checkpoints."
+        help="Checkpoint save strategy."
     )
     train_group.add_argument(
         "--optim",
         type=str,
         default="adamw_torch_fused",
-        help="Otimizador PyTorch (adamw_torch_fused, adamw_torch, etc.)."
+        help="PyTorch optimizer choice (adamw_torch_fused, adamw_torch, etc.)."
     )
     train_group.add_argument(
         "--auto_optimize",
         action="store_true",
         default=True,
-        help="Auto-otimiza batch size, TF32 e FlashAttention para A100/H100/L4 (padrão: True)."
+        help="Auto-optimize batch size, TF32, and FlashAttention for A100/H100/L4 (default: True)."
     )
 
     return parser.parse_args()
@@ -251,21 +252,20 @@ def train():
     hw_profile = setup_hardware_optimizations(args)
 
     print("=" * 70)
-    print("Iniciando Pipeline de Treinamento - CyberRott")
-    print(f"Modelo Base:           {args.model_name_or_path}")
-    print(f"Hardware GPU:          {hw_profile['device_name']} ({hw_profile['vram_gb']} GB VRAM)")
-    print(f"Atenção Configurada:   {args.attn_implementation} (TF32 Matmul: Ativo)")
-    print(f"Batch Size Efetivo:    {args.per_device_train_batch_size} x {args.gradient_accumulation_steps} = {args.per_device_train_batch_size * args.gradient_accumulation_steps}")
-    print(f"DType selecionado:     {args.torch_dtype}")
-    print(f"Target Modules LoRA:   {args.target_modules}")
-    print(f"Diretório de Saída:    {args.output_dir}")
+    print("Launching SFT Fine-Tuning Pipeline - CyberRott")
+    print(f"Base Model:            {args.model_name_or_path}")
+    print(f"GPU Hardware:          {hw_profile['device_name']} ({hw_profile['vram_gb']} GB VRAM)")
+    print(f"Attention Kernel:      {args.attn_implementation} (TF32 Matmul: Active)")
+    print(f"Effective Batch Size:  {args.per_device_train_batch_size} x {args.gradient_accumulation_steps} = {args.per_device_train_batch_size * args.gradient_accumulation_steps}")
+    print(f"Selected DType:        {args.torch_dtype}")
+    print(f"LoRA Target Modules:   {args.target_modules}")
+    print(f"Output Directory:      {args.output_dir}")
     print("=" * 70)
 
-    # 1. Carregar Tokenizer
-    # OBSERVAÇÃO CRÍTICA: trust_remote_code=False é explicitamente definido porque o
-    # Phi-4-mini já possui suporte nativo no transformers. Usar True força o download de
-    # arquivos obsoletos do hub que entram em conflito com versões recentes.
-    print(f"1. Carregando Tokenizer para {args.model_name_or_path}...")
+    # 1. Load Tokenizer
+    # CRITICAL NOTE: trust_remote_code=False is explicitly set because Phi-4-mini
+    # has native support in transformers. Using True pulls legacy conflicting code.
+    print(f"1. Loading Tokenizer for {args.model_name_or_path}...")
     tokenizer = AutoTokenizer.from_pretrained(
         args.model_name_or_path,
         trust_remote_code=False
@@ -273,9 +273,9 @@ def train():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    # 2. Carregar Modelo Base
+    # 2. Load Base Model
     dtype = getattr(torch, args.torch_dtype)
-    print(f"2. Carregando Modelo Base em {args.torch_dtype} com {args.attn_implementation}...")
+    print(f"2. Loading Base Model in {args.torch_dtype} with {args.attn_implementation}...")
     try:
         model = AutoModelForCausalLM.from_pretrained(
             args.model_name_or_path,
@@ -285,8 +285,8 @@ def train():
             trust_remote_code=False
         )
     except Exception as e:
-        print(f"[Aviso] Falha ao carregar com {args.attn_implementation}: {e}")
-        print("Tentando fallback para 'sdpa' (Scaled Dot-Product Attention nativo)...")
+        print(f"[Warning] Failed to load with {args.attn_implementation}: {e}")
+        print("Attempting fallback to 'sdpa' (native Scaled Dot-Product Attention)...")
         model = AutoModelForCausalLM.from_pretrained(
             args.model_name_or_path,
             torch_dtype=dtype,
@@ -295,10 +295,7 @@ def train():
             trust_remote_code=False
         )
 
-    # 3. Configurar LoRA com target_modules adequados ao Phi-4
-    # O Phi-4-mini usa arquitetura Phi3ForCausalLM com camadas fundidas:
-    # Atenção: qkv_proj, o_proj | MLP: gate_up_proj, down_proj
-    # 'all-linear' cobre automaticamente todas as projeções lineares de forma ótima.
+    # 3. Configure LoRA targets tailored for Phi-4
     if args.target_modules.strip().lower() == "all-linear":
         target_modules = "all-linear"
     else:
@@ -312,24 +309,24 @@ def train():
         bias="none",
         task_type=TaskType.CAUSAL_LM,
     )
-    print(f"3. LoRA configurado: r={args.lora_r}, alpha={args.lora_alpha}, target_modules={target_modules}")
+    print(f"3. LoRA configured: r={args.lora_r}, alpha={args.lora_alpha}, target_modules={target_modules}")
 
-    # 4. Carregar Dataset
-    print("4. Carregando dataset...")
+    # 4. Load Dataset
+    print("4. Loading dataset...")
     if args.dataset_name:
-        print(f"Carregando dataset do Hugging Face Hub: {args.dataset_name}")
+        print(f"Loading dataset from Hugging Face Hub: {args.dataset_name}")
         dataset = load_dataset(args.dataset_name, split="train")
     elif os.path.exists(args.data_file):
-        print(f"Carregando dataset local: {args.data_file}")
+        print(f"Loading local dataset: {args.data_file}")
         dataset = load_dataset("json", data_files=args.data_file, split="train")
     else:
         raise FileNotFoundError(
-            f"Dataset não encontrado. Especifique --dataset_name ou garanta que '{args.data_file}' exista."
+            f"Dataset not found. Specify --dataset_name or ensure '{args.data_file}' exists."
         )
 
-    print(f"Dataset carregado com {len(dataset)} amostras.")
+    print(f"Dataset loaded with {len(dataset)} samples.")
 
-    # Formatar conversas para o template ChatML caso o dataset contenha 'messages'
+    # Format conversations to ChatML template if dataset contains 'messages'
     def format_chat(batch):
         if "messages" in batch:
             return {
@@ -341,12 +338,10 @@ def train():
         return batch
 
     if "messages" in dataset.column_names:
-        print("Formatando conversas usando o Chat Template do Phi-4...")
+        print("Formatting conversations using Phi-4 Chat Template...")
         dataset = dataset.map(format_chat, batched=True)
 
-    # 5. Instanciar SFTConfig e SFTTrainer com verificação dinâmica de assinatura (TRL moderno)
-    # TRL >= 0.15 renomeou 'max_seq_length' para 'max_length' em SFTConfig
-    # e padronizou 'processing_class' no SFTTrainer.
+    # 5. Instantiate SFTConfig and SFTTrainer with dynamic parameter inspection
     sft_config_params = inspect.signature(SFTConfig.__init__).parameters
     sft_kwargs = {
         "output_dir": args.output_dir,
@@ -369,19 +364,16 @@ def train():
         "group_by_length": True,
     }
 
-    # Tratamento max_seq_length vs max_length
     if "max_length" in sft_config_params:
         sft_kwargs["max_length"] = args.max_seq_length
     elif "max_seq_length" in sft_config_params:
         sft_kwargs["max_seq_length"] = args.max_seq_length
 
-    # Tratamento dataset_text_field em SFTConfig
     if "dataset_text_field" in sft_config_params:
         sft_kwargs["dataset_text_field"] = "text"
 
     sft_config = SFTConfig(**sft_kwargs)
 
-    # Preparar argumentos do SFTTrainer
     sft_trainer_params = inspect.signature(SFTTrainer.__init__).parameters
     trainer_kwargs = {
         "model": model,
@@ -390,30 +382,28 @@ def train():
         "args": sft_config,
     }
 
-    # Compatibilidade processing_class vs tokenizer no SFTTrainer
     if "processing_class" in sft_trainer_params:
         trainer_kwargs["processing_class"] = tokenizer
     elif "tokenizer" in sft_trainer_params:
         trainer_kwargs["tokenizer"] = tokenizer
 
-    # dataset_text_field direto no SFTTrainer caso a versão do TRL espere aqui
     if "dataset_text_field" in sft_trainer_params and "dataset_text_field" not in sft_kwargs:
         trainer_kwargs["dataset_text_field"] = "text"
 
     trainer = SFTTrainer(**trainer_kwargs)
 
-    # 6. Executar Treinamento
+    # 6. Execute Training
     print("\n" + "=" * 70)
-    print("Iniciando Treinamento LoRA / SFT...")
+    print("Starting LoRA / SFT Training...")
     print("=" * 70)
     trainer.train()
 
-    # 7. Salvar Adaptadores LoRA e Tokenizer
-    print(f"\nSalvando adaptadores LoRA e Tokenizer em: {args.output_dir}")
+    # 7. Save LoRA Adapters and Tokenizer
+    print(f"\nSaving LoRA adapters and Tokenizer to: {args.output_dir}")
     trainer.save_model(args.output_dir)
     tokenizer.save_pretrained(args.output_dir)
     print("=" * 70)
-    print("Treinamento finalizado com sucesso! Adaptadores prontos para inferência ou merge.")
+    print("Training completed successfully! Adapters ready for inference or merging.")
     print("=" * 70)
 
 

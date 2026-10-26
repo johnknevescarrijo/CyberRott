@@ -1,7 +1,19 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+CyberRott - LoRA Adapter Weight Merging Pipeline (Merge & Unload)
+================================================================
+Consolidates low-rank delta matrices directly into base model weights:
+1. Loads base model in specified precision (default: bfloat16).
+2. Merges intermediate SFT LoRA layers if present.
+3. Merges final GRPO / RL LoRA layers.
+4. Cleans PEFT metadata and saves pure standalone Transformers model.
+"""
+
 import os
 import sys
 
-# Desativa TensorFlow quebrado no Python 3.13 do Colab
+# Disable broken TensorFlow in Colab Python 3.13 environments
 os.environ["USE_TF"] = "0"
 os.environ["USE_TORCH"] = "1"
 sys.modules["tensorflow"] = None
@@ -11,7 +23,7 @@ import gc
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-# Desativa verificação do torchao para compatibilidade no Google Colab
+# Disable torchao availability checks for Google Colab compatibility
 try:
     import peft.import_utils
     peft.import_utils.is_torchao_available = lambda: False
@@ -24,7 +36,7 @@ from peft import PeftModel
 
 
 def resolve_adapter_path(path: str) -> str:
-    """Resolve o diretório do adaptador verificando caminhos diretos, subdiretórios e candidatos comuns."""
+    """Resolves adapter directory by inspecting direct paths, subdirectories, and candidate locations."""
     if not path:
         return None
     if os.path.exists(os.path.join(path, "adapter_config.json")):
@@ -33,7 +45,7 @@ def resolve_adapter_path(path: str) -> str:
         for root, _, files in os.walk(path):
             if "adapter_config.json" in files:
                 return root
-    # Candidatos padrão no Colab
+    # Common default candidates in Google Colab / local workspaces
     candidates = [
         "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott-v1.3-GRPO",
         "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_3_GRPO",
@@ -65,55 +77,55 @@ def merge_and_save(
     resolved_final = resolve_adapter_path(adapter_path) or adapter_path
 
     print("=" * 60)
-    print("CyberRott - Fusão de Adaptadores LoRA (Merge & Unload)")
-    print(f"Modelo Base:    {base_model_path}")
+    print("CyberRott - LoRA Adapter Fusion (Merge & Unload)")
+    print(f"Base Model:    {base_model_path}")
     if resolved_sft:
-        print(f"Adaptador SFT:  {resolved_sft}")
+        print(f"SFT Adapter:   {resolved_sft}")
     else:
-        print("Adaptador SFT:  Não detectado (fusão direta)")
-    print(f"Adaptador RL:   {resolved_final}")
-    print(f"Destino Final:  {output_path}")
-    print(f"DType:          {torch_dtype}")
+        print("SFT Adapter:   Not detected (direct merge)")
+    print(f"RL Adapter:    {resolved_final}")
+    print(f"Final Target:  {output_path}")
+    print(f"DType:         {torch_dtype}")
     print("=" * 60)
 
-    print(f"1. Carregando modelo base: {base_model_path} em {torch_dtype}...")
+    print(f"1. Loading base model: {base_model_path} in {torch_dtype}...")
     base_model = AutoModelForCausalLM.from_pretrained(
         base_model_path,
         torch_dtype=dtype,
         device_map="auto" if torch.cuda.is_available() else "cpu",
         trust_remote_code=False
     )
-    print("2. Carregando tokenizer...")
+    print("2. Loading tokenizer...")
     try:
         tokenizer = AutoTokenizer.from_pretrained(resolved_final, trust_remote_code=False)
-        print(f"   [✓] Tokenizer carregado a partir do adaptador: {resolved_final}")
+        print(f"   [✓] Tokenizer loaded from adapter: {resolved_final}")
     except Exception:
         tokenizer = AutoTokenizer.from_pretrained(base_model_path, trust_remote_code=False)
-        print(f"   [✓] Tokenizer carregado a partir do modelo base: {base_model_path}")
+        print(f"   [✓] Tokenizer loaded from base model: {base_model_path}")
 
-    # Se houver adaptador SFT intermediário, funde primeiro o SFT
+    # If intermediate SFT adapter exists, fuse SFT first
     if resolved_sft:
-        print(f"3. Fundindo camada SFT intermediária: {resolved_sft}...")
+        print(f"3. Merging intermediate SFT layer: {resolved_sft}...")
         sft_model = PeftModel.from_pretrained(base_model, resolved_sft)
         base_model = sft_model.merge_and_unload()
-        # Remove peft_config residual para evitar conflito/aviso ao carregar o próximo adaptador LoRA
+        # Clean residual peft_config to avoid warnings when loading next adapter
         if hasattr(base_model, "peft_config"):
             delattr(base_model, "peft_config")
-        print("   [✓] Camada SFT fundida com sucesso no modelo base!")
+        print("   [✓] SFT layer successfully merged into base model!")
 
-    print(f"4. Fundindo adaptadores finais de: {resolved_final}...")
+    print(f"4. Merging final adapters from: {resolved_final}...")
     final_lora_model = PeftModel.from_pretrained(base_model, resolved_final)
     merged_model = final_lora_model.merge_and_unload()
-    # Remove peft_config residual para garantir salvamento puro de modelo base Transformers
+    # Clean residual peft_config to guarantee clean Transformers base model export
     if hasattr(merged_model, "peft_config"):
         delattr(merged_model, "peft_config")
-    print("   [✓] Camada final fundida com sucesso!")
+    print("   [✓] Final adapter layer successfully merged!")
 
-    print(f"5. Salvando modelo completo standalone em: {output_path}...")
+    print(f"5. Saving complete standalone model to: {output_path}...")
     merged_model.save_pretrained(output_path, safe_serialization=True)
     tokenizer.save_pretrained(output_path)
 
-    # Desalocação explícita de memória para liberar VRAM imediatamente
+    # Explicit memory deallocation to release VRAM immediately
     del merged_model, final_lora_model, base_model
     if "sft_model" in locals():
         del sft_model
@@ -123,18 +135,17 @@ def merge_and_save(
         torch.cuda.synchronize()
 
     print("=" * 60)
-    print("Sucesso! Modelo CyberRott Standalone salvo e pronto para exportação (GGUF / Ollama / vLLM).")
+    print("Success! CyberRott Standalone model saved and ready for export (GGUF / Ollama / vLLM).")
     print("=" * 60)
 
 
 if __name__ == "__main__":
-    import os
-    parser = argparse.ArgumentParser(description="Fusão LoRA para Phi-4-mini CyberRott")
-    parser.add_argument("--base_model", default="microsoft/Phi-4-mini-instruct", help="Caminho do modelo base")
-    parser.add_argument("--sft_adapter", default=None, help="Caminho do adaptador SFT prévio (opcional para modelos GRPO)")
-    parser.add_argument("--adapter", required=True, help="Pasta contendo os adaptadores LoRA treinados (GRPO ou SFT)")
-    parser.add_argument("--output", default="./CyberRott-v1.3-Standalone", help="Pasta de destino para o modelo fundido")
-    parser.add_argument("--torch_dtype", default="bfloat16", choices=["bfloat16", "float16", "float32"], help="Precisão dos pesos fundidos")
+    parser = argparse.ArgumentParser(description="LoRA Fusion Pipeline for Phi-4-mini CyberRott")
+    parser.add_argument("--base_model", default="microsoft/Phi-4-mini-instruct", help="Base model identifier or local path")
+    parser.add_argument("--sft_adapter", default=None, help="Path to prior SFT adapter (optional for GRPO models)")
+    parser.add_argument("--adapter", required=True, help="Directory containing trained LoRA adapters (GRPO or SFT)")
+    parser.add_argument("--output", default="./CyberRott-v1.3-Standalone", help="Target directory for the merged standalone model")
+    parser.add_argument("--torch_dtype", default="bfloat16", choices=["bfloat16", "float16", "float32"], help="Numerical precision for merged weights")
     args = parser.parse_args()
 
     merge_and_save(args.base_model, args.adapter, args.output, args.torch_dtype, args.sft_adapter)

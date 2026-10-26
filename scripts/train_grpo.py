@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Pipeline de Treinamento GRPO (Group Relative Policy Optimization) - CyberRott v1.3
-===================================================================================
-Implementa o motor matemático de aprendizado por reforço online estilo DeepSeek-R1:
-1. Fusão automática em memória do checkpoint SFT LoRA prévio (π_ref com zero VRAM extra).
-2. Curadoria focada de amostras ricas em verificação (CWE, MITRE ATT&CK, Múltipla Escolha e Código Sandbox).
-3. 3 Funções de Recompensa Determinísticas Verificáveis integradas ao STaRVerifier:
-   - cot_integrity_reward (0.30): Integridade de <think>, profundidade analítica, 7 estágios e anti-recusa.
-   - technical_accuracy_reward (0.50): Gabarito exato de múltipla escolha e identificadores CWE/MITRE.
-   - sandbox_code_reward (0.20): Validação de sintaxe estática em AST Python, YARA e regras Sigma/YAML.
-4. Otimizado para aceleração em GPU única (NVIDIA A100 40GB / L4 24GB no Colab Pro) via TRL GRPOTrainer e PEFT.
-5. Suporte nativo a validação determinística sem GPU via flag --dry_run.
+GRPO (Group Relative Policy Optimization) Training Pipeline - CyberRott v1.3
+=============================================================================
+Implements the DeepSeek-R1 style online reinforcement learning engine:
+1. Automated in-memory fusion of prior SFT LoRA checkpoint (π_ref with zero extra VRAM).
+2. Targeted curation of verification-rich samples (CWE, MITRE ATT&CK, Multiple Choice, and Sandbox Code).
+3. 3 Verifiable Deterministic Reward Functions integrated with STaRVerifier:
+   - cot_integrity_reward (0.30): Structural <think> integrity, analytical depth, 7 stages, and anti-refusal.
+   - technical_accuracy_reward (0.50): Exact multiple-choice ground truth and CWE/MITRE identifiers.
+   - sandbox_code_reward (0.20): Static syntax validation across Python AST, YARA rules, and Sigma/YAML schemas.
+4. Optimized for single-GPU acceleration (NVIDIA A100 40GB / L4 24GB on Colab Pro) via TRL GRPOTrainer and PEFT.
+5. Native non-GPU deterministic validation support via the --dry_run flag.
 """
 
 import os
-# Configuração precoce do alocador de memória CUDA para mitigar fragmentação de VRAM (expandable_segments)
+# Early configuration of CUDA memory allocator to mitigate VRAM fragmentation (expandable_segments)
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 import sys
 import gc
@@ -31,24 +31,24 @@ import dataclasses
 from typing import List, Dict, Any, Optional, Tuple, Union
 
 # -----------------------------------------------------------------------------
-# Compatibilidade Crítica: Proteção contra divergência de tipos transformers x trl
+# Critical Compatibility Layer: Protection against transformers vs. TRL type divergence
 # -----------------------------------------------------------------------------
 def apply_grpo_compatibility_patches() -> bool:
-    """Aplica patches de compatibilidade essenciais entre transformers (>= 4.48 / 5.x) e TRL GRPOTrainer.
+    """Applies essential compatibility patches between transformers (>= 4.48 / 5.x) and TRL GRPOTrainer.
 
-    1. Corrige trl.import_utils onde verificações de disponibilidade retornam tuplas
-       (ex: em transformers >= 4.48 / 5.x) que o Python avalia como Truthy, causando importações indevidas (ex: vLLM).
-    2. Garante o atributo warnings_issued em PreTrainedModel e GRPOTrainer.__init__ para evitar AttributeError.
-    3. Patch crítico na assinatura de GRPOTrainer._get_train_sampler:
-       Em transformers >= 4.48, Trainer._get_dataloader invoca self._get_train_sampler(dataset),
-       repassando o dataset como argumento posicional. Em versões do TRL (ex: 0.15.x / 0.16.x),
-       GRPOTrainer._get_train_sampler(self) foi definido sem o parâmetro train_dataset, causando:
+    1. Fixes trl.import_utils where availability checks return tuples (e.g., in transformers >= 4.48 / 5.x)
+       that evaluate as Truthy, causing unintended imports (e.g., vLLM).
+    2. Ensures warnings_issued attribute exists on PreTrainedModel and GRPOTrainer.__init__ to prevent AttributeError.
+    3. Critical patch on GRPOTrainer._get_train_sampler signature:
+       In transformers >= 4.48, Trainer._get_dataloader invokes self._get_train_sampler(dataset),
+       passing the dataset as a positional argument. In TRL versions (e.g. 0.15.x / 0.16.x),
+       GRPOTrainer._get_train_sampler(self) was defined without train_dataset, triggering:
        `TypeError: GRPOTrainer._get_train_sampler() takes 1 positional argument but 2 were given`.
-    4. Patch em GRPOTrainer._get_eval_sampler para garantir tolerância a argumentos variáveis/opcionais.
+    4. Patch on GRPOTrainer._get_eval_sampler to guarantee tolerance for optional/variable arguments.
     """
     patched_any = False
 
-    # 1. Correção de tuplas em trl.import_utils e detecção correta de vLLM
+    # 1. Fix tuple return values in trl.import_utils and accurate vLLM detection
     try:
         import trl.import_utils
         import importlib.util
@@ -81,7 +81,7 @@ def apply_grpo_compatibility_patches() -> bool:
     except Exception:
         pass
 
-    # 2. Assegurar warnings_issued em PreTrainedModel
+    # 2. Ensure warnings_issued on PreTrainedModel
     try:
         from transformers import PreTrainedModel
         if not hasattr(PreTrainedModel, "warnings_issued"):
@@ -90,11 +90,11 @@ def apply_grpo_compatibility_patches() -> bool:
     except Exception:
         pass
 
-    # 3. Patch em GRPOTrainer.__init__, _get_train_sampler e _get_eval_sampler
+    # 3. Patch GRPOTrainer.__init__, _get_train_sampler, and _get_eval_sampler
     try:
         from trl.trainer.grpo_trainer import GRPOTrainer, RepeatRandomSampler
 
-        # Hook em GRPOTrainer.__init__ para garantir warnings_issued no modelo
+        # Hook on GRPOTrainer.__init__ to ensure warnings_issued on model
         if not getattr(GRPOTrainer.__init__, "_is_patched", False):
             _orig_grpo_init = GRPOTrainer.__init__
 
@@ -113,12 +113,12 @@ def apply_grpo_compatibility_patches() -> bool:
             GRPOTrainer.__init__ = _patched_grpo_init
             patched_any = True
 
-        # Hook em GRPOTrainer._get_train_sampler
+        # Hook on GRPOTrainer._get_train_sampler
         if not getattr(GRPOTrainer._get_train_sampler, "_is_patched", False):
             _orig_get_train_sampler = GRPOTrainer._get_train_sampler
 
             def _patched_get_train_sampler(self, train_dataset=None, *args, **kwargs):
-                """Sampler compatível com Trainer._get_dataloader (transformers >= 4.48)."""
+                """Sampler compatible with Trainer._get_dataloader (transformers >= 4.48)."""
                 dataset = train_dataset if train_dataset is not None else getattr(self, "train_dataset", None)
                 if dataset is None:
                     return None
@@ -147,12 +147,12 @@ def apply_grpo_compatibility_patches() -> bool:
             GRPOTrainer._get_train_sampler = _patched_get_train_sampler
             patched_any = True
 
-        # Hook em GRPOTrainer._get_eval_sampler
+        # Hook on GRPOTrainer._get_eval_sampler
         if hasattr(GRPOTrainer, "_get_eval_sampler") and not getattr(GRPOTrainer._get_eval_sampler, "_is_patched", False):
             _orig_get_eval_sampler = GRPOTrainer._get_eval_sampler
 
             def _patched_get_eval_sampler(self, eval_dataset=None, *args, **kwargs):
-                """Sampler de avaliação tolerante a eval_dataset opcional."""
+                """Evaluation sampler tolerant of optional eval_dataset."""
                 dataset = eval_dataset if eval_dataset is not None else getattr(self, "eval_dataset", None)
                 if dataset is None:
                     return None
@@ -178,16 +178,16 @@ def apply_grpo_compatibility_patches() -> bool:
     return patched_any
 
 
-# Aplicação imediata dos patches durante a carga do módulo
+# Apply patches immediately upon module import
 apply_grpo_compatibility_patches()
 
 import torch
 
-# Desativação do W&B por padrão e configuração de alocação de memória CUDA
+# Disable Weights & Biases by default and configure CUDA memory allocator
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 os.environ["WANDB_DISABLED"] = "true"
 
-# Adicionar diretório raiz ao path para imports locais
+# Add repository root directory to Python path for local imports
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 try:
     from scripts.star_verifier import (
@@ -214,11 +214,11 @@ verifier = STaRVerifier()
 
 
 # ==============================================================================
-# Otimizações de Hardware para L4 e A100
+# Hardware Optimizations for L4 and A100 Accelerators
 # ==============================================================================
 
 def setup_hardware_optimizations(args: Optional[argparse.Namespace] = None) -> Dict[str, Any]:
-    """Detecta acelerador GPU e configura TF32 e implementações ótimas de atenção."""
+    """Detects GPU accelerator and configures TF32 and optimal attention mechanisms."""
     profile = {
         "device_name": "CPU",
         "vram_gb": 0.0,
@@ -250,38 +250,37 @@ def setup_hardware_optimizations(args: Optional[argparse.Namespace] = None) -> D
     if args is not None and getattr(args, "auto_optimize", True):
         if profile["is_high_vram"] and args.attn_implementation == "sdpa" and profile["recommended_attn"] == "flash_attention_2":
             args.attn_implementation = "flash_attention_2"
-            print("[Auto-Otimização A100] Ativado flash_attention_2 automaticamente.")
+            print("[A100 Auto-Optimization] Automatically activated flash_attention_2.")
 
     return profile
 
 
 # ==============================================================================
-# Aceleração KV-Cache para Rollouts GRPO com Gradient Checkpointing
+# KV-Cache Acceleration for GRPO Rollouts with Gradient Checkpointing
 # ==============================================================================
 
 def enable_fast_generation_with_kv_cache(model: Any) -> Any:
-    """Wrapper de aceleração que reativa o KV-Cache durante model.generate()
-    quando o gradient checkpointing está ativo durante o treinamento GRPO.
+    """Acceleration wrapper that reactivates KV-Cache during model.generate()
+    when gradient checkpointing is active during GRPO reinforcement training.
 
-    Gargalo Crítico Resolvido:
-    Em arquiteturas baseadas em Phi3DecoderLayer (ex: Phi-4-mini-instruct), quando
-    gradient_checkpointing=True e o modelo está em modo train(), o forward da camada força:
-      `use_cache=False` e `past_key_values=None`.
-    O GRPOTrainer executa model.generate() sob torch.no_grad(), mas se o modelo mantiver
-    o flag de gradient checkpointing, o KV-Cache é descartado a cada token. Sem KV-Cache,
-    gerar centenas de tokens possui complexidade O(N^2) recalculando atenção completa,
-    tornando o generate() 10x a 15x mais lento (passando de ~15s para ~170s por iteração no Colab A100).
+    Critical Bottleneck Addressed:
+    In architectures based on Phi3DecoderLayer (e.g. Phi-4-mini-instruct), when
+    gradient_checkpointing=True and model is in train() mode, layer forward forces:
+      `use_cache=False` and `past_key_values=None`.
+    GRPOTrainer executes model.generate() under torch.no_grad(), but if the model retains
+    the gradient checkpointing flag, the KV-Cache is discarded at every token. Without KV-Cache,
+    generating hundreds of tokens scales with O(N^2) complexity, recalculating full attention
+    and causing generate() to run 10x-15x slower (~15s vs ~170s per iteration on Colab A100).
 
-    Mecanismo da Solução:
-    Intercepta model.generate():
-    1. Salva o estado de treino e do gradient checkpointing em todos os submódulos.
-    2. Coloca o modelo temporariamente em model.eval().
-    3. Desativa o gradient checkpointing no modelo e em todas as camadas (m.gradient_checkpointing = False).
-    4. Força model.config.use_cache = True e kwargs['use_cache'] = True.
-    5. Executa a geração original com KV-Cache 100% ativo ($O(N)$ em vez de $O(N^2)$).
-    6. No bloco finally:, restaura model.config.use_cache = False, reativa o gradient
-       checkpointing (model.gradient_checkpointing_enable e m.gradient_checkpointing = True)
-       e restaura o modo de treino original (model.train()).
+    Solution Mechanism:
+    Intercepts model.generate():
+    1. Saves training and gradient checkpointing state across all submodules.
+    2. Temporarily places model in model.eval().
+    3. Disables gradient checkpointing across model and layers (m.gradient_checkpointing = False).
+    4. Enforces model.config.use_cache = True and kwargs['use_cache'] = True.
+    5. Executes original generation with 100% active KV-Cache (O(N) instead of O(N^2)).
+    6. In finally block, restores model.config.use_cache = False, restores gradient
+       checkpointing flags, and returns model to training mode.
     """
     if model is None or not hasattr(model, "generate"):
         return model
@@ -292,7 +291,6 @@ def enable_fast_generation_with_kv_cache(model: Any) -> Any:
     orig_generate = model.generate
 
     def fast_generate(*args, **kwargs):
-        # Evitar re-execução redundante caso PeftModel delegue para base_model.generate
         if getattr(enable_fast_generation_with_kv_cache, "_active_generation", False):
             kwargs["use_cache"] = True
             if "generation_config" in kwargs and kwargs["generation_config"] is not None:
@@ -305,7 +303,7 @@ def enable_fast_generation_with_kv_cache(model: Any) -> Any:
         enable_fast_generation_with_kv_cache._active_generation = True
         was_training = getattr(model, "training", False)
 
-        # 1. Mapear módulos com gradient checkpointing ativo
+        # 1. Map modules with active gradient checkpointing
         gc_modules = []
         for m in model.modules():
             if hasattr(m, "gradient_checkpointing") and getattr(m, "gradient_checkpointing", False):
@@ -314,11 +312,11 @@ def enable_fast_generation_with_kv_cache(model: Any) -> Any:
         prev_is_gc = getattr(model, "is_gradient_checkpointing", False)
 
         try:
-            # a) Colocar em modo eval para desligar dropout e flags de treinamento
+            # a) Switch to eval mode to disable dropout
             if hasattr(model, "eval"):
                 model.eval()
 
-            # b) Desativar temporariamente o gradient checkpointing em todos os módulos
+            # b) Temporarily disable gradient checkpointing across modules
             if hasattr(model, "gradient_checkpointing_disable"):
                 try:
                     model.gradient_checkpointing_disable()
@@ -334,7 +332,7 @@ def enable_fast_generation_with_kv_cache(model: Any) -> Any:
                 except Exception:
                     pass
 
-            # c) Forçar use_cache = True no config do modelo e nos argumentos de geração
+            # c) Force use_cache = True on model config and generation kwargs
             if hasattr(model, "config") and model.config is not None:
                 model.config.use_cache = True
             if hasattr(model, "generation_config") and model.generation_config is not None:
@@ -347,17 +345,17 @@ def enable_fast_generation_with_kv_cache(model: Any) -> Any:
                 except Exception:
                     pass
 
-            # d) Executar o generate original com KV-Cache 100% ativo!
+            # d) Execute generation with 100% active KV-Cache
             return orig_generate(*args, **kwargs)
 
         finally:
-            # e) Restaurar use_cache = False no config (necessário para backprop com gradient checkpointing)
+            # e) Restore use_cache = False on config (required for gradient checkpointing backward pass)
             if hasattr(model, "config") and model.config is not None:
                 model.config.use_cache = False
             if hasattr(model, "generation_config") and model.generation_config is not None:
                 model.generation_config.use_cache = False
 
-            # f) Reativar gradient checkpointing no modelo e em todas as camadas
+            # f) Reactivate gradient checkpointing across model and layers
             if prev_is_gc or gc_modules:
                 if hasattr(model, "gradient_checkpointing_enable"):
                     try:
@@ -379,7 +377,7 @@ def enable_fast_generation_with_kv_cache(model: Any) -> Any:
                 if hasattr(model, "is_gradient_checkpointing"):
                     model.is_gradient_checkpointing = True
 
-            # g) Restaurar o modo de treinamento se estava ativo
+            # g) Restore training mode if active
             if was_training and hasattr(model, "train"):
                 model.train()
 
@@ -394,14 +392,14 @@ enable_fast_generation_with_kv_cache._active_generation = False
 
 
 def resolve_resume_checkpoint(resume_arg: Optional[str], output_dir: str) -> Optional[str]:
-    """Resolve o checkpoint para retomar o treinamento GRPO.
+    """Resolves checkpoint path for resuming GRPO training.
 
     Args:
-        resume_arg: Caminho explícito para o checkpoint ou 'auto' para autodetecção.
-        output_dir: Diretório onde os checkpoints 'checkpoint-*' são salvos.
+        resume_arg: Explicit checkpoint path or 'auto' for automatic detection.
+        output_dir: Directory where 'checkpoint-*' checkpoints are saved.
 
     Returns:
-        Caminho do checkpoint a retomar ou None para iniciar do início.
+        Checkpoint path to resume from, or None to train from start.
     """
     if not resume_arg:
         return None
@@ -409,7 +407,7 @@ def resolve_resume_checkpoint(resume_arg: Optional[str], output_dir: str) -> Opt
     cleaned_arg = str(resume_arg).strip()
     if cleaned_arg.lower() == "auto":
         if not os.path.isdir(output_dir):
-            print(f"[*] Detecção 'auto': Diretório '{output_dir}' não existe ainda. Iniciando treinamento do início.")
+            print(f"[*] 'auto' detection: Directory '{output_dir}' does not exist yet. Starting training from scratch.")
             return None
 
         candidates = []
@@ -421,20 +419,20 @@ def resolve_resume_checkpoint(resume_arg: Optional[str], output_dir: str) -> Opt
                     candidates.append((int(match.group(1)), full_path))
 
         if not candidates:
-            print(f"[*] Detecção 'auto': Nenhum checkpoint encontrado em '{output_dir}'. Iniciando treinamento do início.")
+            print(f"[*] 'auto' detection: No checkpoints found in '{output_dir}'. Starting training from scratch.")
             return None
 
         candidates.sort(key=lambda x: x[0])
         latest_checkpoint = candidates[-1][1]
         step_num = candidates[-1][0]
-        print(f"[✓] Detecção 'auto': Retomando automaticamente do último checkpoint: {latest_checkpoint} (Step {step_num})")
+        print(f"[✓] 'auto' detection: Automatically resuming from latest checkpoint: {latest_checkpoint} (Step {step_num})")
         return latest_checkpoint
 
     if os.path.exists(cleaned_arg):
-        print(f"[✓] Retomando treinamento a partir de checkpoint especificado: {cleaned_arg}")
+        print(f"[✓] Resuming training from specified checkpoint: {cleaned_arg}")
         return cleaned_arg
     else:
-        print(f"[!] Checkpoint especificado não encontrado: '{cleaned_arg}'. Iniciando treinamento do início.")
+        print(f"[!] Specified checkpoint not found: '{cleaned_arg}'. Starting training from scratch.")
         return None
 
 
@@ -443,24 +441,24 @@ def sync_checkpoint_to_google_drive(
     target_subfolder: Optional[str] = None,
     drive_mount: str = "/content/drive/MyDrive"
 ) -> Optional[str]:
-    """Verifica se o Google Drive está montado no Colab e sincroniza o checkpoint final.
+    """Checks whether Google Drive is mounted in Colab and synchronizes the final checkpoint.
 
-    Garante que o modelo treinado seja preservado no Google Drive mesmo que a execução
-    do notebook seja interrompida antes das células subsequentes.
+    Ensures the trained checkpoint is safely persisted in Google Drive even if the notebook
+    runtime terminates prematurely.
 
     Args:
-        source_dir: Caminho local do checkpoint final (ex: args.output_dir).
-        target_subfolder: Subdiretório de destino (padrão: nome base do source_dir ou 'CyberRott-v1.3-GRPO').
-        drive_mount: Ponto de montagem padrão do Google Drive no Colab.
+        source_dir: Local path of final checkpoint (e.g. args.output_dir).
+        target_subfolder: Destination subfolder (default: base name of source_dir or 'CyberRott-v1.3-GRPO').
+        drive_mount: Default mount point for Google Drive in Colab.
 
     Returns:
-        Caminho do diretório de destino no Google Drive ou None caso não esteja montado.
+        Destination directory path in Google Drive, or None if Drive is not mounted.
     """
     if not os.path.exists(drive_mount):
         return None
 
     if not os.path.exists(source_dir):
-        print(f"[!] Diretório de origem '{source_dir}' não encontrado para sincronização no Google Drive.")
+        print(f"[!] Source directory '{source_dir}' not found for Google Drive sync.")
         return None
 
     if not target_subfolder:
@@ -470,14 +468,13 @@ def sync_checkpoint_to_google_drive(
     drive_checkpoints_dir = os.path.join(drive_mount, "CyberRott_Checkpoints")
     drive_target_dir = os.path.join(drive_checkpoints_dir, target_subfolder)
 
-    print(f"\n[*] Google Drive detectado montado em '{drive_mount}'.")
-    print(f"[*] Sincronizando automaticamente checkpoint final '{source_dir}' -> '{drive_target_dir}'...")
+    print(f"\n[*] Google Drive detected at '{drive_mount}'.")
+    print(f"[*] Automatically synchronizing final checkpoint: '{source_dir}' -> '{drive_target_dir}'...")
     try:
         os.makedirs(drive_checkpoints_dir, exist_ok=True)
         shutil.copytree(source_dir, drive_target_dir, dirs_exist_ok=True)
-        print(f"[✓] Checkpoint salvo e sincronizado com sucesso no Google Drive: '{drive_target_dir}'!")
+        print(f"[✓] Checkpoint successfully saved and synced to Google Drive: '{drive_target_dir}'!")
 
-        # Aliases com underscore para total compatibilidade retroativa (ex: CyberRott_v1_3_GRPO)
         for alt_candidate in {
             target_subfolder.replace("-", "_"),
             target_subfolder.replace("-", "_").replace(".", "_"),
@@ -491,28 +488,26 @@ def sync_checkpoint_to_google_drive(
 
         return drive_target_dir
     except Exception as e:
-        print(f"[!] Aviso: Falha ao copiar checkpoint para o Google Drive ({drive_target_dir}): {e}")
+        print(f"[!] Warning: Failed to sync checkpoint to Google Drive ({drive_target_dir}): {e}")
         return None
 
 
-
 # ==============================================================================
-# Helper de Extração de Texto de Completions (Compatibilidade com TRL)
+# Helper for Completion Text Extraction (TRL Compatibility)
 # ==============================================================================
 
 def extract_text_from_completion(c: Any) -> str:
-    """Extrai texto string de completions nos formatos list[str], list[dict] ou list[list[dict]]."""
+    """Extracts raw text string from completions formatted as list[str], list[dict], or list[list[dict]]."""
     if isinstance(c, str):
         return c
     if isinstance(c, list):
         if len(c) == 0:
             return ""
         if isinstance(c[0], dict):
-            # Formato conversacional TRL: busca prioritariamente a mensagem do assistente
+            # TRL conversational schema: prioritize assistant role content
             for msg in reversed(c):
                 if isinstance(msg, dict) and msg.get("role") == "assistant" and "content" in msg:
                     return str(msg["content"])
-            # Fallback para o primeiro item com 'content' (ex.: c[0]["content"])
             if "content" in c[0]:
                 return str(c[0]["content"])
         if isinstance(c[0], str):
@@ -525,16 +520,15 @@ def extract_text_from_completion(c: Any) -> str:
 
 
 def get_eos_token_ids(tokenizer: Any) -> List[int]:
-    """Coleta todos os IDs válidos de stop/EOS tokens do Phi-4 e ChatML para truncamento pontual da geração.
+    """Collects all valid stop/EOS token IDs for Phi-4 and ChatML for exact generation termination.
 
-    No Phi-4-mini-instruct, respostas podem terminar com <|end|>, <|im_end|>, <|endoftext|> ou <|eot_id|>.
-    Sem múltiplos EOS configurados, o modelo continuaria gerando até estourar o limite máximo de tokens.
+    In Phi-4-mini-instruct, completions may terminate with <|end|>, <|im_end|>, <|endoftext|>, or <|eot_id|>.
     """
     eos_ids: List[int] = []
     if tokenizer is None:
         return eos_ids
 
-    # 1. Adicionar o eos_token_id nativo do tokenizer
+    # 1. Add tokenizer native eos_token_id
     native_eos = getattr(tokenizer, "eos_token_id", None)
     if isinstance(native_eos, list):
         for tid in native_eos:
@@ -543,7 +537,7 @@ def get_eos_token_ids(tokenizer: Any) -> List[int]:
     elif isinstance(native_eos, int) and native_eos >= 0:
         eos_ids.append(native_eos)
 
-    # 2. Coletar tokens de parada comuns do Phi-4 e ChatML
+    # 2. Collect common Phi-4 and ChatML stop tokens
     target_tokens = ["<|end|>", "<|im_end|>", "<|endoftext|>", "<|eot_id|>"]
     unk_id = getattr(tokenizer, "unk_token_id", None)
 
@@ -562,20 +556,19 @@ def get_eos_token_ids(tokenizer: Any) -> List[int]:
 
 
 # ==============================================================================
-# As 3 Funções de Recompensa Determinísticas Verificáveis (GRPO Reward Suite)
+# The 3 Deterministic Verifiable Reward Functions (GRPO Reward Suite)
 # ==============================================================================
 
 def check_repetition(text: str) -> bool:
-    """Detecta degeneração em loop ou repetição severa no texto gerado.
+    """Detects loop degeneration or severe token repetition in generated outputs.
 
-    Critérios:
-    1. Uma mesma linha não-vazia de >= 15 caracteres repetida mais de 4 vezes.
-    2. Razão de 4-gramas únicos < 0.35 em textos com mais de 80 palavras.
+    Criteria:
+    1. A single non-empty line of >= 15 characters repeated more than 4 times.
+    2. Unique 4-gram ratio < 0.35 in outputs containing more than 80 words.
     """
     if not text or not isinstance(text, str):
         return False
 
-    # 1. Detecção de linhas idênticas repetidas (>= 15 chars, repetida mais de 4 vezes)
     lines = [line.strip() for line in text.splitlines() if len(line.strip()) >= 15]
     if lines:
         from collections import Counter
@@ -583,7 +576,6 @@ def check_repetition(text: str) -> bool:
         if any(count > 4 for count in line_counts.values()):
             return True
 
-    # 2. Detecção de repetição de n-gramas em textos longos (> 80 palavras, razão < 0.35)
     words = text.split()
     if len(words) > 80:
         ngrams = [tuple(words[j:j+4]) for j in range(len(words) - 3)]
@@ -597,13 +589,13 @@ def check_repetition(text: str) -> bool:
 
 def cot_integrity_reward(prompts: Any, completions: Any, **kwargs) -> List[float]:
     """
-    Função de Recompensa 1: Integridade Estrutural CoT (Peso: 0.30)
-    - Penalidade severa (0.0 imediato) para recusas de IA conversacional e epistêmica.
-    - Anti-truncamento: se <think> estiver presente mas </think> ausente, zera imediatamente (0.0).
-    - Anti-loop / repetição severa: zera se houver linhas em loop (>4x) ou razão de 4-gramas < 0.35.
-    - Trava Anti-Indecisão em Múltipla Escolha: se expected_mc for válido e modelo não escolher, zera (0.0).
-    - Requer tags balanceadas <think>...</think>.
-    - Pontua profundidade do raciocínio, cobertura dos 7 estágios e marcadores estruturais.
+    Reward Function 1: Structural CoT Reasoning Integrity (Weight: 0.30)
+    - Severe penalty (immediate 0.0) for conversational AI refusals and evasions.
+    - Anti-truncation: if <think> is present but </think> is missing, immediate zero score (0.0).
+    - Anti-loop / severe repetition: zeroes score for looping lines (>4x) or 4-gram ratio < 0.35.
+    - Multiple-Choice Anti-Indecision Guard: if expected_mc is valid and model hesitates, zeroes score (0.0).
+    - Requires balanced <think>...</think> tags.
+    - Scores analytical reasoning depth, 7-stage coverage, and structural verdict markers.
     """
     rewards = []
     expected_mcs = kwargs.get("expected_mc", kwargs.get("expected_choice", []))
@@ -611,12 +603,12 @@ def cot_integrity_reward(prompts: Any, completions: Any, **kwargs) -> List[float
     for i, c in enumerate(completions):
         text = extract_text_from_completion(c)
 
-        # 1. Anti-truncamento: se <think> está presente mas </think> NÃO está presente, retorne 0.0 imediatamente
+        # 1. Anti-truncation check
         if "<think>" in text and "</think>" not in text:
             rewards.append(0.0)
             continue
 
-        # Presença mandatória de tags de raciocínio balanceadas
+        # Mandatory presence of paired reasoning tags
         if "<think>" not in text or "</think>" not in text:
             rewards.append(0.0)
             continue
@@ -627,20 +619,19 @@ def cot_integrity_reward(prompts: Any, completions: Any, **kwargs) -> List[float
             rewards.append(0.0)
             continue
 
-        # 2. Detecção anti-loop / repetição severa
+        # 2. Anti-loop repetition detection
         if check_repetition(text):
             rewards.append(0.0)
             continue
 
-        # 3. Trava Anti-Indecisão em Múltipla Escolha:
-        # Se a amostra tiver gabarito de múltipla escolha e extract_mc_answer retornar None, zere o score
+        # 3. Multiple-Choice Anti-Indecision Guard
         expected_mc_val = expected_mcs[i] if (i < len(expected_mcs) and expected_mcs[i]) else None
         is_mc = bool(expected_mc_val and str(expected_mc_val).strip() and str(expected_mc_val).strip().upper() in ["A", "B", "C", "D", "0", "1", "2", "3"])
         if is_mc and extract_mc_answer(text) is None:
             rewards.append(0.0)
             continue
 
-        # 4. Formato e ausência de recusas
+        # 4. Format verification and refusal inspection
         fmt_ok, fmt_reasons, fmt_metrics = verify_format_integrity(
             text,
             min_think_chars=80,
@@ -648,35 +639,33 @@ def cot_integrity_reward(prompts: Any, completions: Any, **kwargs) -> List[float
             min_final_chars=20,
         )
 
-        # Penalidade estrita para recusas de alinhamento
         if fmt_metrics.get("refusals_detected"):
             rewards.append(0.0)
             continue
 
-        # 5. Pontuação de integridade CoT [0.0 - 1.0]
+        # 5. CoT integrity scoring [0.0 - 1.0]
         sub_score = 0.0
 
-        # Formato base correto (abertura, fechamento ordenado e tamanho mínimo)
         if fmt_ok:
             sub_score += 0.40
         else:
             sub_score += 0.15
 
-        # Profundidade e deliberação analítica (ideal: >= 30 palavras de raciocínio)
+        # Analytical depth (ideal: >= 30 reasoning words)
         think_words = fmt_metrics.get("think_words", 0)
         depth_ratio = min(1.0, think_words / 30.0)
         sub_score += 0.20 * depth_ratio
 
-        # Cobertura dos 7 estágios analíticos de cibersegurança do CyberRott
+        # 7-stage cybersecurity reasoning coverage
         stages_cov = fmt_metrics.get("stages_coverage", 0.0)
         sub_score += 0.20 * float(stages_cov)
 
-        # Marcadores estruturais pós-raciocínio (FATO, DETECÇÃO, SUGESTÃO DE CORREÇÃO, etc.)
+        # Structural verdict markers (FACT, DETECTION, REMEDIATION, etc.)
         struct_markers = fmt_metrics.get("structure_markers_found", 0)
         marker_ratio = min(1.0, struct_markers / 2.0)
         sub_score += 0.20 * marker_ratio
 
-        # Escalonado pelo peso 0.30
+        # Scaled by weight 0.30
         rewards.append(round(min(1.0, sub_score) * 0.30, 4))
 
     return rewards
@@ -684,10 +673,10 @@ def cot_integrity_reward(prompts: Any, completions: Any, **kwargs) -> List[float
 
 def technical_accuracy_reward(prompts: Any, completions: Any, **kwargs) -> List[float]:
     """
-    Função de Recompensa 2: Acurácia Técnica e Ground-Truth (Peso: 0.50)
-    - Avalia gabarito exato de múltipla escolha (A, B, C, D) se for MCQ.
-    - Valida indicadores técnicos determinísticos: CWE IDs (CWE-89, etc.) e MITRE ATT&CK (T1059, etc.).
-    - Valida consistência técnica com a resposta de referência.
+    Reward Function 2: Technical Accuracy and Ground-Truth Fidelity (Weight: 0.50)
+    - Evaluates exact multiple-choice key (A, B, C, D) for MCQ challenges.
+    - Validates deterministic technical indicators: CWE IDs (CWE-89, etc.) and MITRE ATT&CK (T1059, etc.).
+    - Validates technical consistency against reference solution.
     """
     rewards = []
     ref_answers = kwargs.get("reference_answer", [])
@@ -703,7 +692,6 @@ def technical_accuracy_reward(prompts: Any, completions: Any, **kwargs) -> List[
         mitre_item = expected_mitres[i] if (i < len(expected_mitres) and expected_mitres[i]) else None
         choice_item = expected_choices[i] if (i < len(expected_choices) and expected_choices[i]) else None
 
-        # Desempacotar strings serializadas se necessário
         if isinstance(cwe_item, str) and cwe_item.strip():
             cwe_list = [c.strip().upper() for c in cwe_item.split(",") if c.strip()]
         elif isinstance(cwe_item, list):
@@ -734,11 +722,9 @@ def technical_accuracy_reward(prompts: Any, completions: Any, **kwargs) -> List[
         if gt_ok:
             sub_score = 1.0
         else:
-            # Em múltipla escolha, gabarito incorreto zera a recompensa
             if gt_type in ["multiple_choice", "multiple_choice_derived"]:
                 sub_score = 0.0
             else:
-                # Indicadores técnicos: concede crédito parcial para identificação precisa
                 candidate_cwes = [cw.upper() for cw in re.findall(r"\bCWE-\d+\b", text, re.I)]
                 candidate_mitre = [mt.upper() for mt in re.findall(r"\bT\d{4}(?:\.\d{3})?\b", text, re.I)]
 
@@ -755,11 +741,9 @@ def technical_accuracy_reward(prompts: Any, completions: Any, **kwargs) -> List[
                 elif mitre_list:
                     sub_score = 1.0 * mitre_ratio
                 else:
-                    # Consistência estrutural de veredito
-                    if any(term in text.lower() for term in ["vulnerabilidade", "vulnerability", "fato:", "veredicto", "verdict"]):
+                    if any(term in text.lower() for term in ["vulnerabilidade", "vulnerability", "fato:", "fact:", "veredicto", "verdict"]):
                         sub_score = 0.60
 
-        # Escalonado pelo peso 0.50
         rewards.append(round(min(1.0, sub_score) * 0.50, 4))
 
     return rewards
@@ -767,12 +751,12 @@ def technical_accuracy_reward(prompts: Any, completions: Any, **kwargs) -> List[
 
 def sandbox_code_reward(prompts: Any, completions: Any, **kwargs) -> List[float]:
     """
-    Função de Recompensa 3: Sandbox Estático de Código e Sintaxe (Peso: 0.20)
-    - Compilação estática AST Python (ast.parse e compile(..., 'exec') sem execução dinâmica).
-    - Gramática estrutural YARA (rule, condition, balanceamento de chaves).
-    - Parsing estático YAML para regras Sigma (title, logsource, detection).
-    - Fechamento estrito de brechas: zera (0.0) se houver recusa detectada, truncamento
-      de tags de reflexão ou omissão/indecisão em questões de múltipla escolha.
+    Reward Function 3: Static Code and Syntax Sandbox (Weight: 0.20)
+    - Python AST compilation (ast.parse and compile(..., 'exec') without live execution).
+    - YARA rule structural grammar (rule, condition, balanced delimiters).
+    - Static YAML parsing for Sigma detection rules (title, logsource, detection).
+    - Strict boundary enforcement: zeroes score (0.0) if refusal detected, reflection
+      tags truncated, or multiple-choice option omitted.
     """
     rewards = []
     expected_mcs = kwargs.get("expected_mc", kwargs.get("expected_choice", []))
@@ -780,18 +764,17 @@ def sandbox_code_reward(prompts: Any, completions: Any, **kwargs) -> List[float]
     for i, c in enumerate(completions):
         text = extract_text_from_completion(c)
 
-        # 1. Fechar brecha de recusa: se o texto tiver recusa detectada, zere imediatamente (0.0)
+        # 1. Refusal penalty
         if verifier.check_refusals(text):
             rewards.append(0.0)
             continue
 
-        # 2. Fechar brecha de truncamento: se abriu <think> mas não fechou </think>, zere (0.0)
+        # 2. Truncation penalty
         if "<think>" in text and "</think>" not in text:
             rewards.append(0.0)
             continue
 
-        # 3. Trava Anti-Indecisão em Múltipla Escolha: se expected_mc estiver presente para aquele índice
-        # e extract_mc_answer(text) for None, retorne 0.0
+        # 3. Multiple-Choice Anti-Indecision Guard
         expected_mc_val = expected_mcs[i] if (i < len(expected_mcs) and expected_mcs[i]) else None
         is_mc = bool(expected_mc_val and str(expected_mc_val).strip() and str(expected_mc_val).strip().upper() in ["A", "B", "C", "D", "0", "1", "2", "3"])
         if is_mc and extract_mc_answer(text) is None:
@@ -802,28 +785,25 @@ def sandbox_code_reward(prompts: Any, completions: Any, **kwargs) -> List[float]
         total_blocks = code_metrics.get("total_code_blocks", 0)
 
         if total_blocks == 0:
-            # Resposta puramente textual conceitual sem recusa, truncamento ou indecisão: pontuação neutra
             sub_score = 1.0
         else:
             if code_ok:
                 sub_score = 1.0
             else:
-                # Penaliza proporcionalmente os blocos que falharam na compilação
                 failed_blocks = len(code_reasons)
                 sub_score = max(0.0, 1.0 - (failed_blocks / float(total_blocks)))
 
-        # Escalonado pelo peso 0.20
         rewards.append(round(min(1.0, sub_score) * 0.20, 4))
 
     return rewards
 
 
 # ==============================================================================
-# Carregamento do Dataset com Fallback GitHub e Curadoria de Verificabilidade
+# Dataset Loading with GitHub Fallback and Verifiability Curation
 # ==============================================================================
 
 DEFAULT_SYSTEM_PROMPT = (
-    "Você é o CyberRott, uma IA especialista em segurança ofensiva, defensiva e análise de vulnerabilidades com raciocínio analítico profundo."
+    "You are CyberRott, a specialized reasoning AI for offensive, defensive, and vulnerability analysis with deep analytical reasoning."
 )
 
 GITHUB_RAW_TRAIN = "https://raw.githubusercontent.com/johnknevescarrijo/CyberRott/main/data/cyberrott_final_train.jsonl"
@@ -831,19 +811,18 @@ GITHUB_RAW_ANCHOR = "https://raw.githubusercontent.com/johnknevescarrijo/CyberRo
 
 
 def ensure_dataset_exists(file_path: str, fallback_url: str) -> str:
-    """Garante que o arquivo exista localmente, realizando download do GitHub caso ausente."""
+    """Ensures dataset file exists locally, downloading from GitHub fallback if absent."""
     if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
         return file_path
 
     os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
-    print(f"[*] Arquivo local '{file_path}' ausente. Baixando via fallback do GitHub ({fallback_url})...")
+    print(f"[*] Local file '{file_path}' absent. Downloading via GitHub fallback ({fallback_url})...")
     try:
         urllib.request.urlretrieve(fallback_url, file_path)
-        print(f"[✓] Download concluído com sucesso: {file_path} ({os.path.getsize(file_path) / (1024*1024):.2f} MB)")
+        print(f"[✓] Download completed successfully: {file_path} ({os.path.getsize(file_path) / (1024*1024):.2f} MB)")
         return file_path
     except Exception as e:
-        print(f"[!] Falha ao baixar de {fallback_url}: {e}")
-        # Tenta clone shallow do repositório como plano B
+        print(f"[!] Failed to download from {fallback_url}: {e}")
         if not os.path.exists(file_path):
             tmp_clone = "/tmp/cyberrott_git_clone"
             if not os.path.exists(tmp_clone):
@@ -851,11 +830,11 @@ def ensure_dataset_exists(file_path: str, fallback_url: str) -> str:
             repo_file = os.path.join(tmp_clone, file_path)
             if os.path.exists(repo_file):
                 shutil.copyfile(repo_file, file_path)
-                print(f"[✓] Arquivo recuperado via git clone: {file_path}")
+                print(f"[✓] File recovered via git clone: {file_path}")
                 return file_path
 
     if not os.path.exists(file_path):
-        raise FileNotFoundError(f"Não foi possível encontrar nem baixar o dataset: {file_path}")
+        raise FileNotFoundError(f"Unable to locate or download dataset: {file_path}")
     return file_path
 
 
@@ -865,15 +844,15 @@ def parse_and_curate_dataset(
     max_samples: int = 400
 ) -> List[Dict[str, Any]]:
     """
-    Carrega o dataset, extrai metadados determinísticos de verificação e prioriza amostras
-    com maior densidade técnica (CWE + MITRE + Múltipla Escolha + Código) somadas a todas as Âncoras.
+    Loads dataset, extracts deterministic verification metadata, and prioritizes samples
+    with highest technical density (CWE + MITRE + Multiple Choice + Code) plus Golden Anchors.
     """
     ensure_dataset_exists(train_path, GITHUB_RAW_TRAIN)
     ensure_dataset_exists(anchor_path, GITHUB_RAW_ANCHOR)
 
     all_raw_samples = []
 
-    # 1. Carregar âncoras de ouro de alta prioridade (dataset_cyber_ready.jsonl)
+    # 1. Load high-priority Golden Anchors (dataset_cyber_ready.jsonl)
     anchor_count = 0
     if os.path.exists(anchor_path):
         with open(anchor_path, "r", encoding="utf-8") as f:
@@ -887,9 +866,9 @@ def parse_and_curate_dataset(
                     anchor_count += 1
                 except json.JSONDecodeError:
                     continue
-        print(f"[*] Amostras Âncora carregadas: {anchor_count}")
+        print(f"[*] Golden Anchor samples loaded: {anchor_count}")
 
-    # 2. Carregar dataset de treino principal (cyberrott_final_train.jsonl)
+    # 2. Load primary training corpus (cyberrott_final_train.jsonl)
     train_count = 0
     with open(train_path, "r", encoding="utf-8") as f:
         for line in f:
@@ -902,9 +881,9 @@ def parse_and_curate_dataset(
                 train_count += 1
             except json.JSONDecodeError:
                 continue
-    print(f"[*] Amostras de Treino carregadas: {train_count} (Total bruto: {len(all_raw_samples)})")
+    print(f"[*] Training samples loaded: {train_count} (Total raw entries: {len(all_raw_samples)})")
 
-    # 3. Processar e classificar por riqueza de verificação
+    # 3. Process and rank by verifiability richness
     curated_records = []
     for item in all_raw_samples:
         messages = item.get("messages", [])
@@ -915,7 +894,6 @@ def parse_and_curate_dataset(
         user_content = None
         assistant_content = ""
 
-        prompt_messages = []
         for msg in messages:
             role = msg.get("role", "")
             content = msg.get("content", "")
@@ -937,7 +915,7 @@ def parse_and_curate_dataset(
             {"role": "user", "content": user_content},
         ]
 
-        # Extração de Indicadores de Ground-Truth da resposta do assistente
+        # Extract ground-truth indicators
         cwe_matches = list(set(re.findall(r"\bCWE-\d+\b", assistant_content, re.IGNORECASE)))
         expected_cwe = ",".join([c.upper() for c in cwe_matches])
 
@@ -945,13 +923,12 @@ def parse_and_curate_dataset(
         expected_mitre = ",".join([m.upper() for m in mitre_matches])
 
         expected_choice = extract_mc_answer(assistant_content) or ""
-
         has_code = "```" in assistant_content
 
-        # Cálculo da Densidade de Verificabilidade (Richness Score)
+        # Verifiability Richness Score
         richness_score = 0.0
         if item.get("_is_anchor", False):
-            richness_score += 100.0  # Preserva 100% das âncoras
+            richness_score += 100.0  # Preserve 100% of anchors
         if cwe_matches:
             richness_score += 4.0
         if mitre_matches:
@@ -974,17 +951,16 @@ def parse_and_curate_dataset(
             "_is_anchor": item.get("_is_anchor", False),
         })
 
-    # 4. Ordenar por verificabilidade decrescente
+    # 4. Sort by descending richness
     curated_records.sort(key=lambda x: x["_richness"], reverse=True)
 
     if max_samples > 0 and len(curated_records) > max_samples:
         selected_records = curated_records[:max_samples]
-        print(f"[✓] Curadoria concluída: Selecionadas {len(selected_records)} melhores amostras verificáveis (max_samples={max_samples}).")
+        print(f"[✓] Curation completed: Selected {len(selected_records)} top verifiable samples (max_samples={max_samples}).")
     else:
         selected_records = curated_records
-        print(f"[✓] Curadoria concluída: Utilizando todas as {len(selected_records)} amostras disponíveis.")
+        print(f"[✓] Curation completed: Utilizing all {len(selected_records)} available samples.")
 
-    # Remover chaves temporárias internas
     final_dataset = []
     for r in selected_records:
         final_dataset.append({
@@ -1000,44 +976,42 @@ def parse_and_curate_dataset(
 
 
 # ==============================================================================
-# Execução do Modo Dry Run (Validação Sem GPU)
+# Dry-Run Mode Execution (Non-GPU Validation)
 # ==============================================================================
 
 def run_dry_run_validation(dataset_records: List[Dict[str, Any]]) -> bool:
-    """Valida o carregamento dos dados, extração de gabarito e cálculo determinístico das 3 recompensas."""
+    """Validates data loading, ground-truth extraction, and deterministic computation of all 3 rewards."""
     print("\n" + "=" * 70)
-    print("🔍 MODO DRY-RUN: VALIDAÇÃO DETERMINÍSTICA DO PIPELINE GRPO")
+    print("🔍 DRY-RUN MODE: DETERMINISTIC VALIDATION OF GRPO PIPELINE")
     print("=" * 70)
-    print(f"[*] Total de amostras prontas para GRPO: {len(dataset_records)}")
+    print(f"[*] Total samples ready for GRPO: {len(dataset_records)}")
 
-    # Estatísticas do dataset curado
     cwe_samples = sum(1 for r in dataset_records if r["expected_cwe"])
     mitre_samples = sum(1 for r in dataset_records if r["expected_mitre"])
     choice_samples = sum(1 for r in dataset_records if r["expected_choice"])
 
-    print(f"[*] Amostras com CWE esperado:              {cwe_samples} ({cwe_samples/len(dataset_records)*100:.1f}%)")
-    print(f"[*] Amostras com MITRE ATT&CK esperado:     {mitre_samples} ({mitre_samples/len(dataset_records)*100:.1f}%)")
-    print(f"[*] Amostras com Múltipla Escolha esperada: {choice_samples} ({choice_samples/len(dataset_records)*100:.1f}%)")
+    print(f"[*] Samples with expected CWE:              {cwe_samples} ({cwe_samples/len(dataset_records)*100:.1f}%)")
+    print(f"[*] Samples with expected MITRE ATT&CK:     {mitre_samples} ({mitre_samples/len(dataset_records)*100:.1f}%)")
+    print(f"[*] Samples with expected Multiple Choice:  {choice_samples} ({choice_samples/len(dataset_records)*100:.1f}%)")
 
-    # Amostra de teste para o cálculo das funções de recompensa
     test_sample = dataset_records[0]
     prompt = test_sample["prompt"]
     gold_ref = test_sample["reference_answer"]
 
     prompts_batch = [prompt] * 4
 
-    # 4 Variações sintéticas para testar a resposta do motor de recompensas:
-    # 1. Candidato Ideal (espera recompensa alta)
-    cand_ideal = gold_ref if ("<think>" in gold_ref and "</think>" in gold_ref) else f"<think>\nAnálise da superfície e mapeamento de fluxo com sinks identificados.\nConclusão da vulnerabilidade: CWE-89.\n</think>\nFATO: Identificado CWE-89.\nDETECÇÃO: Monitorar SQL Injection.\nSUGESTÃO DE CORREÇÃO:\n```python\ncursor.execute('SELECT * FROM users WHERE id = %s', (user_id,))\n```"
+    # 4 Synthetic variations to evaluate reward response:
+    # 1. Ideal candidate (expects high reward)
+    cand_ideal = gold_ref if ("<think>" in gold_ref and "</think>" in gold_ref) else f"<think>\nAnalysis of attack surface and data flow with identified sinks.\nVulnerability verdict: CWE-89.\n</think>\nFACT: Identified CWE-89.\nDETECTION: Monitor SQL Injection patterns.\nREMEDIATION:\n```python\ncursor.execute('SELECT * FROM users WHERE id = %s', (user_id,))\n```"
 
-    # 2. Candidato com Recusa de Alinhamento (deve zerar CoT reward)
-    cand_refusal = "<think>Analisei o pedido.</think> I apologize, but as an AI language model I cannot assist with vulnerability analysis."
+    # 2. Refusal candidate (must zero CoT reward)
+    cand_refusal = "<think>Analyzing request.</think> I apologize, but as an AI language model I cannot assist with vulnerability analysis."
 
-    # 3. Candidato com Tags Quebradas (deve penalizar CoT)
-    cand_broken_tags = "Esta resposta não tem tags de pensamento. O CWE é CWE-89."
+    # 3. Broken tags candidate (must penalize CoT)
+    cand_broken_tags = "This response lacks deliberation tags. The flaw is CWE-89."
 
-    # 4. Candidato com Erro de Código (deve penalizar Code reward)
-    cand_syntax_error = "<think>\nAnálise técnica com identificação de falha.\n</think>\nFATO: Falha detectada.\n```python\ndef broken_func(\n  returrn syntax error !\n```"
+    # 4. Syntax error candidate (must penalize sandbox code reward)
+    cand_syntax_error = "<think>\nTechnical analysis with flaw identification.\n</think>\nFACT: Flaw detected.\n```python\ndef broken_func(\n  returrn syntax error !\n```"
 
     completions_batch = [cand_ideal, cand_refusal, cand_broken_tags, cand_syntax_error]
 
@@ -1054,38 +1028,37 @@ def run_dry_run_validation(dataset_records: List[Dict[str, Any]]) -> bool:
     r_box = sandbox_code_reward(prompts_batch, completions_batch, **kwargs)
 
     print("\n" + "-" * 70)
-    print("RESULTADO DO TESTE DAS 3 FUNÇÕES DE RECOMPENSA (BATCH DE TESTE):")
+    print("EVALUATION TEST RESULTS FOR THE 3 REWARD FUNCTIONS (TEST BATCH):")
     print("-" * 70)
     scenarios = [
-        "1. Candidato Ideal (Full CoT + Clean Code)",
-        "2. Candidato com Recusa ('As an AI...')",
-        "3. Candidato sem Tags <think>",
-        "4. Candidato com Erro de Sintaxe Python",
+        "1. Ideal Candidate (Full CoT + Clean Code)",
+        "2. Refusal Candidate ('As an AI...')",
+        "3. Missing Tags Candidate (No <think>)",
+        "4. Syntax Error Candidate (Python AST Error)",
     ]
 
     for idx, name in enumerate(scenarios):
         total_r = round(r_cot[idx] + r_acc[idx] + r_box[idx], 4)
         print(f"\n{name}:")
-        print(f"  • cot_integrity_reward (peso 0.30):    {r_cot[idx]:.4f}")
-        print(f"  • technical_accuracy_reward (peso 0.50): {r_acc[idx]:.4f}")
-        print(f"  • sandbox_code_reward (peso 0.20):      {r_box[idx]:.4f}")
-        print(f"  ➜ RECOMPENSA TOTAL COMBINADA:          {total_r:.4f} / 1.0000")
+        print(f"  • cot_integrity_reward (weight 0.30):    {r_cot[idx]:.4f}")
+        print(f"  • technical_accuracy_reward (weight 0.50): {r_acc[idx]:.4f}")
+        print(f"  • sandbox_code_reward (weight 0.20):      {r_box[idx]:.4f}")
+        print(f"  ➜ TOTAL COMBINED REWARD:                 {total_r:.4f} / 1.0000")
 
-    # Asserções determinísticas de sanidade
-    assert r_cot[1] == 0.0, "Falha: Recusa de alinhamento não zerou cot_integrity_reward!"
-    assert r_box[1] == 0.0, "Falha: Recusa de alinhamento não zerou sandbox_code_reward!"
-    assert r_cot[2] == 0.0, "Falha: Ausência de <think> não zerou cot_integrity_reward!"
-    assert r_box[3] < 0.20, "Falha: Erro de sintaxe Python não foi penalizado em sandbox_code_reward!"
-    assert r_cot[0] > 0.0, "Falha: Candidato ideal deve obter recompensa CoT positiva!"
+    assert r_cot[1] == 0.0, "Failure: Alignment refusal did not zero cot_integrity_reward!"
+    assert r_box[1] == 0.0, "Failure: Alignment refusal did not zero sandbox_code_reward!"
+    assert r_cot[2] == 0.0, "Failure: Missing <think> tags did not zero cot_integrity_reward!"
+    assert r_box[3] < 0.20, "Failure: Python syntax error was not penalized in sandbox_code_reward!"
+    assert r_cot[0] > 0.0, "Failure: Ideal candidate must receive positive CoT reward!"
 
     print("\n" + "=" * 70)
-    print("🏆 [DRY-RUN BEM-SUCEDIDO] Todas as funções de recompensa e parsing validados com 100% de precisão!")
+    print("🏆 [DRY-RUN SUCCESSFUL] All reward functions and parsing validated with 100% precision!")
     print("=" * 70 + "\n")
     return True
 
 
 # ==============================================================================
-# Resolução e Configuração do Motor vLLM (Compatibilidade TRL 0.14 - 0.19+)
+# vLLM Engine Resolution and Configuration (TRL 0.14 - 0.19+ Compatibility)
 # ==============================================================================
 
 def probe_vllm_server(
@@ -1094,10 +1067,7 @@ def probe_vllm_server(
     timeout: float = 2.0,
     hosts: Tuple[str, ...] = ("127.0.0.1", "0.0.0.0"),
 ) -> bool:
-    """Verifica se existe um servidor vLLM externo ativo nos hosts/porta informados.
-
-    Executa probe de socket TCP com timeout configurável (padrão: 2.0s).
-    """
+    """Checks whether an external vLLM server is active on the given host/port via TCP socket probe."""
     import socket
     candidate_hosts = list(hosts)
     if host not in candidate_hosts:
@@ -1122,18 +1092,7 @@ def resolve_vllm_kwargs(
     server_port: int = 8000,
     server_host: str = "127.0.0.1",
 ) -> Dict[str, Any]:
-    """Resolve os argumentos de configuração vLLM para GRPOConfig garantindo compatibilidade entre versões do TRL.
-
-    Regras de compatibilidade:
-    1. Se `vllm_mode` existir na assinatura de GRPOConfig.__init__ (TRL >= 0.18/0.19):
-       Sempre define vllm_mode="colocate" e vllm_gpu_memory_utilization=gpu_mem_util (nunca seta host/port).
-    2. Se NÃO existir `vllm_mode`, mas existir `vllm_server_host`/`vllm_server_port` (TRL só-servidor, ~0.16/0.17):
-       Executa probe de socket TCP em 127.0.0.1 e 0.0.0.0 na porta configurada (timeout 2s).
-       Se ninguém responder, imprime aviso claro em português e define use_vllm=False com fallback nativo.
-       Garante que nenhum caminho deixe use_vllm=True sem servidor ativo.
-    3. Se existir `vllm_device` (TRL antigo ~0.14/0.15) e não for modo servidor:
-       Mantém comportamento com vllm_device="cuda:0" e vllm_gpu_memory_utilization se suportado.
-    """
+    """Resolves vLLM configuration arguments for GRPOConfig across TRL versions."""
     try:
         if inspect.isclass(config_cls):
             sig_params = inspect.signature(config_cls.__init__).parameters
@@ -1148,7 +1107,7 @@ def resolve_vllm_kwargs(
     if not use_vllm:
         return {"use_vllm": False}
 
-    # 1. TRL com suporte nativo a colocate (TRL >= 0.18 / 0.19+)
+    # 1. TRL with native colocate support (TRL >= 0.18 / 0.19+)
     if "vllm_mode" in sig_params:
         result: Dict[str, Any] = {
             "use_vllm": True,
@@ -1158,8 +1117,7 @@ def resolve_vllm_kwargs(
             result["vllm_gpu_memory_utilization"] = gpu_mem_util
         return result
 
-    # 2. TRL em modo exclusivamente client-server (~0.16 / 0.17)
-    # Detectado se possui vllm_server_host ou vllm_server_port e NÃO possui vllm_mode
+    # 2. TRL server-only mode (~0.16 / 0.17)
     if "vllm_server_host" in sig_params or "vllm_server_port" in sig_params:
         is_alive = False
         if probe_fn is not None:
@@ -1184,12 +1142,11 @@ def resolve_vllm_kwargs(
 
         if not is_alive:
             print(
-                "[!] Aviso: TRL instalado só suporta vLLM em modo servidor; atualize com "
-                "`pip install -U 'trl>=0.19'` para usar colocate. Fazendo fallback para geração nativa HF."
+                "[!] Warning: TRL instalado só suporta vLLM em modo servidor; "
+                "upgrade with `pip install -U 'trl>=0.19'` to use colocate. Fazendo fallback para geração nativa HF."
             )
             return {"use_vllm": False}
 
-        # Servidor externo detectado ativo
         result = {"use_vllm": True}
         if "vllm_server_port" in sig_params:
             result["vllm_server_port"] = server_port
@@ -1197,7 +1154,7 @@ def resolve_vllm_kwargs(
             result["vllm_server_host"] = server_host
         return result
 
-    # 3. TRL legado (~0.14 / 0.15) que operava via vllm_device local
+    # 3. Legacy TRL (~0.14 / 0.15) operating via vllm_device
     if "vllm_device" in sig_params:
         resolved_device = "cuda:0"
         if vllm_device and vllm_device != "auto":
@@ -1210,7 +1167,6 @@ def resolve_vllm_kwargs(
             result["vllm_gpu_memory_utilization"] = gpu_mem_util
         return result
 
-    # 4. Fallback genérico caso exista apenas use_vllm
     result = {"use_vllm": True}
     if "vllm_gpu_memory_utilization" in sig_params:
         result["vllm_gpu_memory_utilization"] = gpu_mem_util
@@ -1218,11 +1174,11 @@ def resolve_vllm_kwargs(
 
 
 # ==============================================================================
-# Truncamento de Prompt e Filtragem de Argumentos GRPOConfig (Compatibilidade TRL)
+# Prompt Truncation and GRPOConfig Keyword Filtering (TRL Compatibility)
 # ==============================================================================
 
 def _tokenize_helper(tokenizer: Any, text: str) -> List[int]:
-    """Tokeniza texto de forma resiliente tolerando variações de assinatura do tokenizer."""
+    """Tokenizes text with fallback handling for tokenizer signature variations."""
     try:
         return tokenizer.encode(text, add_special_tokens=False)
     except TypeError:
@@ -1233,7 +1189,7 @@ def _tokenize_helper(tokenizer: Any, text: str) -> List[int]:
 
 
 def _decode_helper(tokenizer: Any, tokens: List[int]) -> str:
-    """Decodifica tokens de forma resiliente tolerando variações de assinatura do tokenizer."""
+    """Decodes tokens with fallback handling for tokenizer signature variations."""
     try:
         return tokenizer.decode(tokens, skip_special_tokens=False)
     except TypeError:
@@ -1248,10 +1204,9 @@ def truncate_prompt(
     tokenizer: Any,
     max_prompt_length: int,
 ) -> Union[str, List[Dict[str, str]]]:
-    """Trunca o prompt mantendo o final (lado esquerdo truncado) se exceder max_prompt_length.
+    """Truncates prompt keeping the tail end (left-side truncated) if exceeding max_prompt_length.
 
-    Preserva integralmente a intenção e instrução mais recente do usuário (right-side/suffix),
-    eliminando tokens mais antigos do início caso a contagem exceda o limite orçamentário.
+    Preserves latest user instructions (right-side context) while trimming oldest history tokens.
     """
     if not prompt or max_prompt_length <= 0 or tokenizer is None:
         return prompt
@@ -1281,7 +1236,6 @@ def truncate_prompt(
         if total_tokens <= max_prompt_length:
             return copied_prompt
 
-        # Se a última mensagem sozinha já exceder ou atingir o limite orçamentário
         if len(msg_tokens[-1]) >= max_prompt_length:
             last_tokens = msg_tokens[-1][-max_prompt_length:]
             copied_prompt[-1]["content"] = _decode_helper(tokenizer, last_tokens)
@@ -1289,7 +1243,6 @@ def truncate_prompt(
                 copied_prompt[idx]["content"] = ""
             return [m for m in copied_prompt if m.get("content")]
 
-        # Caso contrário, preserva a última mensagem inteira e trunca mensagens anteriores (descartando início)
         budget_for_others = max_prompt_length - len(msg_tokens[-1])
         for idx in range(len(copied_prompt) - 2, -1, -1):
             cur_tokens = msg_tokens[idx]
@@ -1313,7 +1266,7 @@ def truncate_dataset_prompts(
     tokenizer: Any,
     max_prompt_length: int,
 ) -> List[Dict[str, Any]]:
-    """Aplica truncamento manual de prompt em todos os registros do dataset mantendo o final do contexto."""
+    """Applies left-truncation to prompt fields across all dataset records preserving suffix context."""
     if not records or tokenizer is None or max_prompt_length <= 0:
         return records
 
@@ -1330,11 +1283,10 @@ def filter_supported_kwargs(
     config_cls: Any,
     kwargs: Dict[str, Any],
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """Filtra kwargs para instanciação de classes de configuração (ex.: GRPOConfig / TrainingArguments).
+    """Filters kwargs for configuration classes (e.g., GRPOConfig / TrainingArguments).
 
-    Identifica parâmetros suportados inspecionando dataclasses.fields (fonte primária para dataclasses,
-    incluindo parâmetros herdados de TrainingArguments) e inspect.signature(config_cls.__init__).
-    Retorna tupla: (filtered_kwargs, dropped_kwargs).
+    Inspects dataclasses.fields and inspect.signature to ensure parameter support.
+    Returns: (filtered_kwargs, dropped_kwargs).
     """
     supported = set()
     if dataclasses.is_dataclass(config_cls):
@@ -1363,256 +1315,256 @@ def filter_supported_kwargs(
 
 
 # ==============================================================================
-# Pipeline Principal de Treinamento GRPO
+# Main GRPO Training CLI and Runner
 # ==============================================================================
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="CyberRott v1.3 - Treinamento Online GRPO com TRL e PEFT"
+        description="CyberRott v1.3 - Online GRPO Training Pipeline with TRL and PEFT"
     )
 
-    # Argumentos do Modelo e Adaptador
-    model_group = parser.add_argument_group("Modelo")
+    # Model and Adapter Arguments
+    model_group = parser.add_argument_group("Model")
     model_group.add_argument(
         "--model_name_or_path",
         type=str,
         default="microsoft/Phi-4-mini-instruct",
-        help="Modelo base Hugging Face (padrão: microsoft/Phi-4-mini-instruct)."
+        help="Hugging Face base model identifier or local directory (default: microsoft/Phi-4-mini-instruct)."
     )
     model_group.add_argument(
         "--adapter_name_or_path", "--sft_lora_path",
         dest="adapter_name_or_path",
         type=str,
         default="./cyberrott_v1_1_sft_lora",
-        help="Caminho do checkpoint LoRA da Fase 2 (SFT). Se existir, será fundido na memória como π_ref."
+        help="Path to Phase 2 (SFT) LoRA checkpoint. Fused in memory as reference policy π_ref."
     )
     model_group.add_argument(
         "--torch_dtype",
         type=str,
         default="bfloat16",
         choices=["bfloat16", "float16", "float32"],
-        help="Tipo de precisão dos tensores (padrão: bfloat16)."
+        help="Tensor numerical precision (default: bfloat16)."
     )
     model_group.add_argument(
         "--attn_implementation",
         type=str,
         default="sdpa",
         choices=["sdpa", "flash_attention_2", "eager"],
-        help="Implementação de atenção: sdpa ou flash_attention_2."
+        help="Attention implementation: sdpa or flash_attention_2."
     )
 
-    # Argumentos de Dados
-    data_group = parser.add_argument_group("Dados")
+    # Data Arguments
+    data_group = parser.add_argument_group("Data")
     data_group.add_argument(
         "--dataset_name", "--data_path", "--data_file",
         dest="dataset_name",
         type=str,
         default="data/cyberrott_final_train.jsonl",
-        help="Arquivo JSONL do dataset consolidado de treino."
+        help="JSONL path for the consolidated training dataset."
     )
     data_group.add_argument(
         "--anchor_file",
         type=str,
         default="data/dataset_cyber_ready.jsonl",
-        help="Arquivo JSONL com as Âncoras de Ouro complexas."
+        help="JSONL path for the high-density Golden Anchors."
     )
     data_group.add_argument(
         "--max_samples",
         type=int,
         default=800,
-        help="Quantidade de amostras curadas por densidade técnica (padrão: 800; <=0 usa todas as 4.680)."
+        help="Sample count curated by technical richness (default: 800; <=0 uses full corpus)."
     )
     data_group.add_argument(
         "--max_prompt_length",
         type=int,
         default=768,
-        help="Tamanho máximo de contexto do prompt (padrão: 768)."
+        help="Maximum prompt context length in tokens (default: 768)."
     )
     data_group.add_argument(
         "--max_completion_length",
         type=int,
         default=1024,
-        help="Tamanho máximo dos rollouts gerados (padrão: 1024)."
+        help="Maximum generated rollout length in tokens (default: 1024)."
     )
 
-    # Argumentos GRPO e Treinamento
-    grpo_group = parser.add_argument_group("Hiperparâmetros GRPO")
+    # GRPO Hyperparameters
+    grpo_group = parser.add_argument_group("GRPO Hyperparameters")
     grpo_group.add_argument(
         "--output_dir",
         type=str,
         default="./CyberRott-v1.3-GRPO",
-        help="Diretório de saída para salvar o checkpoint GRPO final."
+        help="Output directory to save final GRPO checkpoint and adapters."
     )
     grpo_group.add_argument(
         "--num_generations",
         type=int,
         default=8,
-        help="Número de rollouts gerados por prompt (G) no cálculo de vantagem relativa (padrão: 8)."
+        help="Number of rollouts generated per prompt (G) for relative advantage calculation (default: 8)."
     )
     grpo_group.add_argument(
         "--beta",
         type=float,
         default=0.02,
-        help="Coeficiente de penalidade KL em relação à política de referência π_ref (padrão: 0.02)."
+        help="KL divergence regularization penalty vs reference policy π_ref (default: 0.02)."
     )
     grpo_group.add_argument(
         "--learning_rate",
         type=float,
         default=5e-6,
-        help="Taxa de aprendizado AdamW para a fase GRPO (padrão: 5e-6)."
+        help="AdamW learning rate for the GRPO phase (default: 5e-6)."
     )
     grpo_group.add_argument(
         "--per_device_train_batch_size",
         type=int,
         default=2,
-        help="Tamanho do micro-batch por dispositivo no forward/backward (padrão: 2; reduz drasticamente VRAM de ativações)."
+        help="Per-device forward/backward micro-batch size (default: 2; minimizes activation VRAM)."
     )
     grpo_group.add_argument(
         "--gradient_accumulation_steps",
         type=int,
         default=8,
-        help="Passos de acumulação de gradiente (padrão: 8; micro_batch=2 * 8 = batch efetivo 16 divisível por G=8)."
+        help="Gradient accumulation steps (default: 8; micro_batch=2 * 8 = effective batch 16)."
     )
     grpo_group.add_argument(
         "--gradient_checkpointing",
         dest="gradient_checkpointing",
         action="store_true",
         default=None,
-        help="Habilita gradient checkpointing (padrão: True em todas as GPUs para evitar OOM com Phi-4-mini 200k vocab)."
+        help="Enable gradient checkpointing (default: True to prevent OOM with Phi-4 200k vocabulary)."
     )
     grpo_group.add_argument(
         "--no_gradient_checkpointing",
         dest="gradient_checkpointing",
         action="store_false",
-        help="Desabilita explicitamente o gradient checkpointing."
+        help="Explicitly disable gradient checkpointing."
     )
     grpo_group.add_argument(
         "--num_train_epochs", "--epochs",
         dest="num_train_epochs",
         type=int,
         default=1,
-        help="Número de épocas de treinamento GRPO (padrão: 1)."
+        help="Number of GRPO training epochs (default: 1)."
     )
     grpo_group.add_argument(
         "--max_steps",
         type=int,
         default=-1,
-        help="Número máximo de passos (-1 desativa e usa num_train_epochs)."
+        help="Maximum training steps (-1 uses num_train_epochs)."
     )
     grpo_group.add_argument(
         "--save_steps",
         type=int,
         default=20,
-        help="Intervalo de salvamento de checkpoints (padrão: 20)."
+        help="Checkpoint saving interval in steps (default: 20)."
     )
     grpo_group.add_argument(
         "--resume_from_checkpoint",
         type=str,
         default=None,
-        help="Caminho para checkpoint ou 'auto' para retomar automaticamente do mais recente em --output_dir."
+        help="Path to checkpoint or 'auto' to resume from the latest in --output_dir."
     )
     grpo_group.add_argument(
         "--logging_steps",
         type=int,
         default=5,
-        help="Intervalo de logging dos passos de treino e recompensas."
+        help="Logging frequency in steps."
     )
     grpo_group.add_argument(
         "--save_total_limit",
         type=int,
         default=2,
-        help="Limite de checkpoints mantidos em disco."
+        help="Maximum checkpoints retained on disk."
     )
     grpo_group.add_argument(
         "--warmup_ratio",
         type=float,
         default=0.1,
-        help="Proporção de warmup do learning rate scheduler."
+        help="Learning rate schedule warmup ratio."
     )
     grpo_group.add_argument(
         "--seed",
         type=int,
         default=42,
-        help="Semente aleatória para reprodutibilidade."
+        help="Random seed for reproducibility."
     )
 
-    # Argumentos LoRA PEFT
+    # LoRA / PEFT Arguments
     lora_group = parser.add_argument_group("LoRA")
     lora_group.add_argument(
         "--lora_r",
         type=int,
         default=32,
-        help="Rank LoRA para adaptação durante GRPO (padrão: 32)."
+        help="LoRA rank for adaptation during GRPO (default: 32)."
     )
     lora_group.add_argument(
         "--lora_alpha",
         type=int,
         default=64,
-        help="Alpha LoRA (padrão: 64)."
+        help="LoRA alpha scaling factor (default: 64)."
     )
     lora_group.add_argument(
         "--lora_dropout",
         type=float,
         default=0.05,
-        help="Dropout LoRA (padrão: 0.05)."
+        help="LoRA dropout rate (default: 0.05)."
     )
 
-    # Argumentos vLLM
+    # vLLM Arguments
     vllm_group = parser.add_argument_group("vLLM")
     vllm_group.add_argument(
         "--use_vllm",
         action="store_true",
         default=False,
-        help="Utiliza engine vLLM para geração ultra-rápida de rollouts durante o treinamento GRPO."
+        help="Use vLLM engine for high-throughput rollout generation during GRPO training."
     )
     vllm_group.add_argument(
         "--vllm_gpu_memory_utilization",
         type=float,
         default=0.30,
-        help="Fração de VRAM alocada para o engine vLLM (padrão: 0.30; liberando VRAM para o backprop das 32 camadas)."
+        help="VRAM fraction allocated for the vLLM engine (default: 0.30)."
     )
     vllm_group.add_argument(
         "--vllm_device",
         type=str,
         default="auto",
-        help="Dispositivo para o motor vLLM (padrão: 'auto')."
+        help="Device specification for vLLM (default: 'auto')."
     )
     vllm_group.add_argument(
         "--vllm_server_port",
         type=int,
         default=8000,
-        help="Porta do servidor vLLM externo (caso TRL opere em modo servidor; padrão: 8000)."
+        help="External vLLM server port if operating in client-server mode (default: 8000)."
     )
     vllm_group.add_argument(
         "--vllm_server_host",
         type=str,
         default="127.0.0.1",
-        help="Host do servidor vLLM externo (caso TRL opere em modo servidor; padrão: '127.0.0.1')."
+        help="External vLLM server host if operating in client-server mode (default: '127.0.0.1')."
     )
 
-    # Flags de Execução
-    exec_group = parser.add_argument_group("Execução")
+    # Execution Flags
+    exec_group = parser.add_argument_group("Execution")
     exec_group.add_argument(
         "--dry_run",
         action="store_true",
-        help="Modo de auditoria rápida sem GPU: valida dataset, ground-truth e as 3 recompensas."
+        help="Non-GPU audit mode: validates dataset parsing, ground-truth extraction, and all 3 rewards."
     )
     exec_group.add_argument(
         "--auto_optimize",
         action="store_true",
         default=True,
-        help="Ajusta atenções e TF32 dinamicamente conforme hardware detectado."
+        help="Dynamically configure TF32 and attention kernels based on detected accelerator."
     )
     exec_group.add_argument(
         "--push_to_hub",
         action="store_true",
-        help="Envia o checkpoint final para o Hugging Face Hub."
+        help="Publish the final checkpoint to the Hugging Face Hub."
     )
     exec_group.add_argument(
         "--hub_model_id",
         type=str,
         default=None,
-        help="Nome do repositório no Hub se --push_to_hub estiver ativo."
+        help="Hugging Face repository ID if --push_to_hub is active."
     )
 
     return parser.parse_args()
@@ -1621,43 +1573,43 @@ def parse_args():
 def main():
     args = parse_args()
     print("=" * 70)
-    print("🚀 CyberRott v1.3 — Pipeline de Treinamento GRPO (DeepSeek-R1 Style)")
+    print("🚀 CyberRott v1.3 — GRPO Online Training Pipeline (DeepSeek-R1 Style)")
     print("=" * 70)
 
-    # 1. Configurar otimizações de aceleração de hardware
+    # 1. Hardware acceleration setup
     hw_info = setup_hardware_optimizations(args)
-    print(f"[*] Hardware: {hw_info['device_name']} | VRAM: {hw_info['vram_gb']} GB | Atenção: {args.attn_implementation}")
+    print(f"[*] Hardware: {hw_info['device_name']} | VRAM: {hw_info['vram_gb']} GB | Attention: {args.attn_implementation}")
 
-    # 2. Carregar e curar o dataset com extração de metadados
+    # 2. Dataset curation and verifiability extraction
     dataset_records = parse_and_curate_dataset(
         train_path=args.dataset_name,
         anchor_path=args.anchor_file,
         max_samples=args.max_samples
     )
 
-    # 3. Execução em Modo Dry-Run se solicitado
+    # 3. Dry-Run Mode execution if requested
     if args.dry_run:
         success = run_dry_run_validation(dataset_records)
         sys.exit(0 if success else 1)
 
-    # 4. Importar módulos de ML (executado apenas se não for dry-run)
+    # 4. Import ML frameworks (executed only for real training runs)
     from datasets import Dataset
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from peft import LoraConfig, TaskType, PeftModel
     import trl
     from trl import GRPOTrainer, GRPOConfig
 
-    trl_version = getattr(trl, "__version__", "desconhecida")
-    print(f"[*] Versão do TRL detectada: v{trl_version}")
+    trl_version = getattr(trl, "__version__", "unknown")
+    print(f"[*] Detected TRL version: v{trl_version}")
 
-    # 5. Carregar Tokenizer
-    print(f"[*] Carregando tokenizer de '{args.model_name_or_path}'...")
+    # 5. Load Tokenizer
+    print(f"[*] Loading tokenizer from '{args.model_name_or_path}'...")
     tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path, trust_remote_code=False)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.truncation_side = "left"
 
-    # 6. Carregar Modelo Base
+    # 6. Load Base Model
     dtype_map = {
         "bfloat16": torch.bfloat16,
         "float16": torch.float16,
@@ -1665,7 +1617,7 @@ def main():
     }
     torch_dtype = dtype_map.get(args.torch_dtype, torch.bfloat16)
 
-    print(f"[*] Carregando modelo base: {args.model_name_or_path} ({args.torch_dtype})...")
+    print(f"[*] Loading base model: {args.model_name_or_path} ({args.torch_dtype})...")
     base_model = AutoModelForCausalLM.from_pretrained(
         args.model_name_or_path,
         torch_dtype=torch_dtype,
@@ -1674,28 +1626,28 @@ def main():
         trust_remote_code=False,
     )
 
-    # 7. Fusão Automática na Memória: SFT_LORA -> Base Model (Política π_ref sem VRAM extra)
+    # 7. In-Memory Fusion: SFT LoRA -> Base Model (Policy π_ref with 0 extra VRAM)
     adapter_path = args.adapter_name_or_path
     if adapter_path and os.path.exists(adapter_path) and os.path.exists(os.path.join(adapter_path, "adapter_config.json")):
-        print(f"\n[*] Checkpoint SFT prévio detectado em: '{adapter_path}'")
-        print("[*] Realizando fusão LoRA na memória (merge_and_unload)...")
+        print(f"\n[*] Prior SFT checkpoint detected at: '{adapter_path}'")
+        print("[*] Merging LoRA weights in memory (merge_and_unload)...")
         start_merge = time.time()
         peft_sft = PeftModel.from_pretrained(base_model, adapter_path)
         base_model = peft_sft.merge_and_unload()
-        print(f"[✓] Fusão concluída em {time.time() - start_merge:.2f}s!")
-        print("[✓] O modelo com tradecraft SFT agora atua diretamente como política de referência π_ref!")
-        print("[✓] Economia: 0 VRAM adicional necessária para modelo de referência!\n")
+        print(f"[✓] Fusion completed in {time.time() - start_merge:.2f}s!")
+        print("[✓] Model with SFT tradecraft now directly acts as reference policy π_ref!")
+        print("[✓] Memory savings: 0 additional VRAM required for reference model!\n")
     else:
-        print(f"[*] Nenhum adaptador prévio encontrado em '{adapter_path}'. Iniciando GRPO diretamente sobre o modelo base.")
+        print(f"[*] No prior adapter found at '{adapter_path}'. Starting GRPO directly on base model.")
 
     if hasattr(base_model, "enable_input_require_grads"):
         base_model.enable_input_require_grads()
 
-    # Ativa aceleração KV-cache para o modelo base durante rollouts com gradient checkpointing
+    # Enable KV-cache acceleration for base model during rollouts with gradient checkpointing
     enable_fast_generation_with_kv_cache(base_model)
 
-    # 8. Configuração de novo LoRA para o treinamento da fase GRPO
-    print(f"[*] Configurando LoRA limpo para a fase de RL: r={args.lora_r}, alpha={args.lora_alpha}, target=all-linear...")
+    # 8. Setup fresh LoRA adapter for GRPO training
+    print(f"[*] Configuring clean LoRA for RL phase: r={args.lora_r}, alpha={args.lora_alpha}, target=all-linear...")
     lora_config = LoraConfig(
         r=args.lora_r,
         lora_alpha=args.lora_alpha,
@@ -1705,8 +1657,7 @@ def main():
         bias="none",
     )
 
-    # 9. Configuração do GRPOConfig (TRL)
-    # Identificação antecipada de campos suportados por GRPOConfig
+    # 9. Configure GRPOConfig (TRL)
     supported_grpo_fields = set()
     if dataclasses.is_dataclass(GRPOConfig):
         supported_grpo_fields.update(f.name for f in dataclasses.fields(GRPOConfig))
@@ -1721,9 +1672,6 @@ def main():
     )
 
     if has_modern_grpo_batching:
-        # TRL Moderno: Suporta desacoplamento entre geração (G rollouts por prompt) e micro-batch de treino.
-        # Não forçamos per_device_train_batch_size = num_generations, economizando muita VRAM no backward pass.
-        # Apenas exigimos que o batch efetivo (per_device_train_batch_size * gradient_accumulation_steps) seja múltiplo de num_generations.
         effective_gen_batch = args.per_device_train_batch_size * args.gradient_accumulation_steps
         if effective_gen_batch % args.num_generations != 0:
             target_batch = ((effective_gen_batch + args.num_generations - 1) // args.num_generations) * args.num_generations
@@ -1731,59 +1679,48 @@ def main():
             while (args.per_device_train_batch_size * new_gas) % args.num_generations != 0:
                 new_gas += 1
             print(
-                f"[*] Auto-ajuste TRL GRPO moderno: gradient_accumulation_steps ajustado de "
-                f"{args.gradient_accumulation_steps} para {new_gas} para garantir que o batch efetivo "
-                f"({args.per_device_train_batch_size * new_gas}) seja múltiplo de num_generations={args.num_generations}."
+                f"[*] Modern TRL GRPO auto-adjustment: gradient_accumulation_steps adjusted from "
+                f"{args.gradient_accumulation_steps} to {new_gas} to ensure effective batch "
+                f"({args.per_device_train_batch_size * new_gas}) is divisible by num_generations={args.num_generations}."
             )
             args.gradient_accumulation_steps = new_gas
     else:
-        # TRL Legado: Exige estritamente per_device_train_batch_size múltiplo de num_generations
         if args.per_device_train_batch_size < args.num_generations or (args.per_device_train_batch_size % args.num_generations != 0):
             print(
-                f"[*] Auto-ajuste TRL GRPO (legado): per_device_train_batch_size ({args.per_device_train_batch_size}) "
-                f"ajustado para {args.num_generations} (múltiplo obrigatório de num_generations={args.num_generations})."
+                f"[*] Legacy TRL GRPO auto-adjustment: per_device_train_batch_size ({args.per_device_train_batch_size}) "
+                f"adjusted to {args.num_generations} (must be multiple of num_generations={args.num_generations})."
             )
             args.per_device_train_batch_size = args.num_generations
 
-    # Decisão de Gradient Checkpointing:
-    # Se especificado via CLI, respeita a escolha do usuário.
-    # Caso contrário: SEMPRE use_gc = True por padrão (mesmo em A100 40GB).
-    # Racional: No GRPO + vLLM colocate com vocabulário de 200k do Phi-4-mini e 32 camadas,
-    # as ativações ocupam dezenas de GiBs no backward pass sem checkpointing, levando a OOM.
-    # Graças ao enable_fast_generation_with_kv_cache, gradient checkpointing não afeta
-    # a velocidade dos rollouts (mantém complexidade O(N)).
     if args.gradient_checkpointing is not None:
         use_gc = bool(args.gradient_checkpointing)
-        print(f"[*] Gradient Checkpointing explicitamente definido pelo usuário: {use_gc}")
+        print(f"[*] Gradient Checkpointing explicitly set by user: {use_gc}")
     else:
         use_gc = True
         print(
-            "[*] Gradient Checkpointing ATIVADO por padrão (essencial no GRPO com Phi-4-mini 200k vocab "
-            "e 32 camadas para evitar OOM em ativações; rollouts mantêm aceleração KV-cache via wrapper)."
+            "[*] Gradient Checkpointing ENABLED by default (critical in GRPO with Phi-4-mini 200k vocabulary "
+            "and 32 layers to prevent activation OOM; rollouts retain KV-cache acceleration via wrapper)."
         )
 
-    # Harmonização do modelo base com Gradient Checkpointing
     if use_gc:
         if hasattr(base_model, "gradient_checkpointing_enable"):
             try:
                 base_model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
             except TypeError:
                 base_model.gradient_checkpointing_enable()
-            print("[✓] Gradient Checkpointing habilitado no modelo base (use_reentrant=False).")
+            print("[✓] Gradient Checkpointing enabled on base model (use_reentrant=False).")
         if hasattr(base_model.config, "use_cache"):
             base_model.config.use_cache = False
 
-    # Verificação e integração do motor vLLM
     use_vllm = args.use_vllm
     if use_vllm:
         import importlib.util
         if importlib.util.find_spec("vllm") is None:
-            print("[!] Aviso: --use_vllm solicitado, mas o pacote 'vllm' não está instalado no ambiente. Executando rollouts com PyTorch KV-cache nativo.")
+            print("[!] Warning: --use_vllm requested, but 'vllm' package is not installed. Running rollouts with native PyTorch KV-cache.")
             use_vllm = False
         else:
-            print("[✓] Pacote 'vllm' detectado no ambiente Python.")
+            print("[✓] 'vllm' package detected in Python environment.")
 
-    # Resolução robusta de parâmetros vLLM ANTES de instanciar GRPOConfig
     vllm_kwargs = resolve_vllm_kwargs(
         config_cls=GRPOConfig,
         use_vllm=use_vllm,
@@ -1794,22 +1731,21 @@ def main():
     )
     use_vllm = vllm_kwargs.get("use_vllm", False)
 
-    # Identificação do modo vLLM escolhido para log
     sig_params = inspect.signature(GRPOConfig.__init__).parameters
     if not use_vllm:
-        vllm_mode_desc = "Desativado (geração nativa Hugging Face / PyTorch KV-cache)"
+        vllm_mode_desc = "Disabled (native Hugging Face / PyTorch KV-cache generation)"
     elif vllm_kwargs.get("vllm_mode") == "colocate":
         vllm_mode_desc = f"vLLM colocate in-process (GPU Memory Utilization: {vllm_kwargs.get('vllm_gpu_memory_utilization', args.vllm_gpu_memory_utilization)})"
     elif "vllm_server_port" in vllm_kwargs or "vllm_server_host" in sig_params:
-        vllm_mode_desc = f"vLLM modo servidor ativo ({getattr(args, 'vllm_server_host', '127.0.0.1')}:{vllm_kwargs.get('vllm_server_port', getattr(args, 'vllm_server_port', 8000))})"
+        vllm_mode_desc = f"vLLM active server mode ({getattr(args, 'vllm_server_host', '127.0.0.1')}:{vllm_kwargs.get('vllm_server_port', getattr(args, 'vllm_server_port', 8000))})"
     elif "vllm_device" in vllm_kwargs:
-        vllm_mode_desc = f"vLLM legado (dispositivo: {vllm_kwargs.get('vllm_device')})"
+        vllm_mode_desc = f"vLLM legacy (device: {vllm_kwargs.get('vllm_device')})"
     else:
-        vllm_mode_desc = "vLLM ativado"
+        vllm_mode_desc = "vLLM enabled"
 
-    print(f"[*] Modo de geração vLLM selecionado: {vllm_mode_desc}")
+    print(f"[*] Selected vLLM generation mode: {vllm_mode_desc}")
 
-    print(f"[*] Configurando hiperparâmetros GRPO: lr={args.learning_rate}, beta={args.beta}, G={args.num_generations}...")
+    print(f"[*] Setting GRPO hyperparameters: lr={args.learning_rate}, beta={args.beta}, G={args.num_generations}...")
     grpo_config_kwargs = {
         "output_dir": args.output_dir,
         "learning_rate": args.learning_rate,
@@ -1836,44 +1772,37 @@ def main():
     if use_gc and "gradient_checkpointing_kwargs" in sig_params:
         grpo_config_kwargs["gradient_checkpointing_kwargs"] = {"use_reentrant": False}
 
-    # Aplicação estrita dos kwargs vLLM resolvidos
     grpo_config_kwargs.update(vllm_kwargs)
 
-    # Se a versão nova do TRL tiver generation_batch_size:
-    # Garante divisibilidade de (per_device_train_batch_size * gradient_accumulation_steps) por num_generations
     effective_gen_batch = args.per_device_train_batch_size * args.gradient_accumulation_steps
     if "generation_batch_size" in supported_grpo_fields:
         grpo_config_kwargs["generation_batch_size"] = effective_gen_batch
-        print(f"[*] TRL moderno: generation_batch_size configurado como {effective_gen_batch} (divisível por G={args.num_generations}).")
+        print(f"[*] Modern TRL: generation_batch_size configured as {effective_gen_batch} (divisible by G={args.num_generations}).")
 
     if "torch_empty_cache_steps" in supported_grpo_fields:
         grpo_config_kwargs["torch_empty_cache_steps"] = 1
-        print("[*] TRL GRPO: torch_empty_cache_steps=1 configurado para prevenção contínua de fragmentação de VRAM.")
+        print("[*] TRL GRPO: torch_empty_cache_steps=1 configured for continuous VRAM defragmentation.")
 
-    # Filtra os kwargs suportados pelo GRPOConfig da versão instalada do TRL
     filtered_config_kwargs, dropped_config_kwargs = filter_supported_kwargs(GRPOConfig, grpo_config_kwargs)
 
-    # Tratamento específico para kwargs não suportados:
     if dropped_config_kwargs:
         dropped_names = ", ".join(sorted(dropped_config_kwargs.keys()))
-        print(f"[!] Parâmetros ignorados por incompatibilidade com TRL {trl_version}: {dropped_names}")
+        print(f"[!] Parameters ignored due to incompatibility with TRL {trl_version}: {dropped_names}")
 
-    # Truncamento manual do prompt no dataset se max_prompt_length não for suportado pelo GRPOConfig
     if "max_prompt_length" in dropped_config_kwargs:
         print(
-            f"[*] 'max_prompt_length' não suportado nativamente pelo GRPOConfig (TRL {trl_version}). "
-            f"Aplicando truncamento manual no dataset ({args.max_prompt_length} tokens, truncation_side='left')..."
+            f"[*] 'max_prompt_length' not natively supported by GRPOConfig (TRL {trl_version}). "
+            f"Applying manual prompt truncation ({args.max_prompt_length} tokens, truncation_side='left')..."
         )
         dataset_records = truncate_dataset_prompts(dataset_records, tokenizer, args.max_prompt_length)
-        print(f"[✓] Truncamento manual de prompts concluído para {len(dataset_records)} amostras.")
+        print(f"[✓] Manual prompt truncation completed for {len(dataset_records)} samples.")
 
-    # Converter registros para HuggingFace Dataset
     hf_dataset = Dataset.from_list(dataset_records)
-    print(f"[✓] Hugging Face Dataset construído com {len(hf_dataset)} amostras.")
+    print(f"[✓] Hugging Face Dataset constructed with {len(hf_dataset)} samples.")
 
     grpo_config = GRPOConfig(**filtered_config_kwargs)
 
-    # 10. Inicialização do GRPOTrainer
+    # 10. Initialize GRPOTrainer
     reward_suite = [
         cot_integrity_reward,
         technical_accuracy_reward,
@@ -1899,13 +1828,12 @@ def main():
     else:
         trainer_kwargs["processing_class"] = tokenizer
 
-    print("[*] Inicializando GRPOTrainer com a suíte de 3 recompensas verificáveis...")
+    print("[*] Initializing GRPOTrainer with 3 verifiable reward functions...")
     trainer = GRPOTrainer(**trainer_kwargs)
 
-    # Configuração de todos os Stop/EOS Tokens do Phi-4 e ChatML para truncamento pontual da geração
     eos_ids = get_eos_token_ids(tokenizer)
     if eos_ids:
-        print(f"[*] Stop/EOS Token IDs configurados para geração ({len(eos_ids)} tokens): {eos_ids}")
+        print(f"[*] Stop/EOS Token IDs configured for generation ({len(eos_ids)} tokens): {eos_ids}")
         if hasattr(trainer, "generation_config") and trainer.generation_config is not None:
             trainer.generation_config.eos_token_id = eos_ids
         if hasattr(base_model, "generation_config") and base_model.generation_config is not None:
@@ -1913,19 +1841,17 @@ def main():
         if hasattr(trainer.model, "generation_config") and trainer.model.generation_config is not None:
             trainer.model.generation_config.eos_token_id = eos_ids
 
-    # Aceleração KV-Cache para rollout generation com gradient checkpointing
     enable_fast_generation_with_kv_cache(trainer.model)
     if hasattr(trainer, "model_wrapped") and trainer.model_wrapped is not None:
         enable_fast_generation_with_kv_cache(trainer.model_wrapped)
-    print("[*] Wrapper KV-Cache ativado com sucesso para aceleração de rollouts.")
+    print("[*] KV-Cache wrapper successfully activated for rollout acceleration.")
 
-    # 11. Treinamento GRPO
+    # 11. Run GRPO Training
     print("\n" + "=" * 70)
-    print("🔥 INICIANDO TREINAMENTO GRPO ONLINE (CyberRott v1.3)")
+    print("🔥 STARTING ONLINE GRPO REINFORCEMENT LEARNING (CyberRott v1.3)")
     print("=" * 70 + "\n")
 
-    # Limpeza preventiva de cache CUDA antes de iniciar o treinamento
-    print("[*] Executando coleta de lixo e esvaziamento de cache CUDA antes do treinamento...")
+    print("[*] Running garbage collection and emptying CUDA cache prior to training...")
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -1934,27 +1860,26 @@ def main():
     train_result = trainer.train(resume_from_checkpoint=resume_checkpoint)
 
     print("\n" + "=" * 70)
-    print(f"[✓] Treinamento GRPO concluído com sucesso!")
-    print(f"[*] Métricas finais: {train_result.metrics}")
+    print("[✓] GRPO Training completed successfully!")
+    print(f"[*] Final metrics: {train_result.metrics}")
     print("=" * 70 + "\n")
 
-    # 12. Salvamento do Modelo e Tokenizer
-    print(f"[*] Salvando checkpoint final em: {args.output_dir}...")
+    # 12. Save Model and Tokenizer
+    print(f"[*] Saving final checkpoint to: {args.output_dir}...")
     trainer.save_model(args.output_dir)
     tokenizer.save_pretrained(args.output_dir)
-    print(f"[✓] Checkpoint CyberRott v1.3 GRPO gravado com sucesso em '{args.output_dir}'!")
+    print(f"[✓] CyberRott v1.3 GRPO checkpoint successfully written to '{args.output_dir}'!")
 
-    # 13. Sincronização Automática com Google Drive (Colab)
+    # 13. Synchronize with Google Drive if in Colab
     sync_checkpoint_to_google_drive(
         source_dir=args.output_dir,
         target_subfolder="CyberRott-v1.3-GRPO"
     )
 
     if args.push_to_hub:
-        print("[*] Publicando modelo no Hugging Face Hub...")
+        print("[*] Publishing model to Hugging Face Hub...")
         trainer.push_to_hub()
-        print("[✓] Modelo publicado com sucesso!")
-
+        print("[✓] Model successfully published!")
 
 
 if __name__ == "__main__":
