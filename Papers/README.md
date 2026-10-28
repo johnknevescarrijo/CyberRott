@@ -62,3 +62,34 @@ Esta pasta reúne os artigos científicos seminais que fundamentam as técnicas 
 * **Título:** *Phi-4 Technical Report* (Microsoft, 2024)
 * **arXiv:** [arXiv:2412.08905](https://arxiv.org/abs/2412.08905)
 * **O que estuda:** Detalhes metodológicos da Microsoft sobre pré-treino, pós-treino (DPO, SFT) e filtragem sintética de dados para modelos de alta capacidade de raciocínio.
+
+---
+
+### 7. DoRA: Weight-Decomposed Low-Rank Adaptation
+* **Título:** *DoRA: Weight-Decomposed Low-Rank Adaptation* (Liu et al., 2024)
+* **arXiv:** [arXiv:2402.09353](https://arxiv.org/abs/2402.09353)
+* **O que estuda:** Decomposição dos pesos em vetor de magnitude $m$ e matriz de direção $V$, aplicando atualização de baixo posto exclusivamente na direção ($\Delta W = m \frac{W_0 + BA}{\|W_0 + BA\|_F}$). Isso estabiliza o aprendizado, reduz a lacuna entre LoRA e fine-tuning completo e melhora a expressividade matemática e de código.
+* **Onde se conecta no seu código:**
+  - Suporte nativo a DoRA via `--use_dora`, `--dora_rank 64`, `--dora_alpha 128` em [`train_grpo.py`](file:///home/john/Programacao/Estudos/CyberRott/scripts/train_grpo.py), [`train_star.py`](file:///home/john/Programacao/Estudos/CyberRott/scripts/train_star.py) e [`train_colab.py`](file:///home/john/Programacao/Estudos/CyberRott/scripts/train_colab.py).
+
+---
+
+### 8. Let's Verify Step by Step (Process-Supervised Reward Models - PRM)
+* **Título:** *Let's Verify Step by Step* (Lightman et al., 2023 - OpenAI)
+* **arXiv:** [arXiv:2305.20050](https://arxiv.org/abs/2305.20050)
+* **O que estuda:** Comparação entre supervisão de resultado final (Outcome-supervised Reward Models - ORM) e supervisão por passos intermediários (Process-supervised Reward Models - PRM). Mostra que pontuar cada passo dedutivo individualmente reduz drasticamente alucinações, mitiga reward hacking e permite aos modelos detectar e corrigir erros em problemas dedutivos complexos.
+* **Onde se conecta no seu código:**
+  - Verificador de passos analíticos: `verify_prm_steps` e `compute_prm_step_score` em [`star_verifier.py`](file:///home/john/Programacao/Estudos/CyberRott/scripts/star_verifier.py).
+  - Quarta função de recompensa em RL: `prm_step_reward` em [`train_grpo.py`](file:///home/john/Programacao/Estudos/CyberRott/scripts/train_grpo.py).
+  - Filtragem e pontuação de trajetórias sintéticas: [`train_star.py`](file:///home/john/Programacao/Estudos/CyberRott/scripts/train_star.py).
+
+---
+
+### 9. Self-Consistency & Test-Time Compute Scaling
+* **Título:** *Self-Consistency Improves Chain of Thought Reasoning in Language Models* (Wang et al., 2022 - Google Research) / *Scaling LLM Test-Time Compute Optimally* (Snell et al., 2024 - UC Berkeley)
+* **arXiv:** [arXiv:2203.11171](https://arxiv.org/abs/2203.11171) & [arXiv:2408.03314](https://arxiv.org/abs/2408.03314)
+* **O que estuda:** Como alocar computação adicional no momento da inferência (Test-Time Compute) em vez de apenas no pré-treinamento. Amostra múltiplos caminhos de raciocínio diversos em paralelo e agrega as respostas finais por maioria simples (Majority Voting), maioria ponderada por verificador (PRM-Weighted Self-Consistency) ou seleção do melhor candidato (Best-of-$N$).
+* **Onde se conecta no seu código:**
+  - Seleção Best-of-$N$: `select_best_of_n` em [`eval_wmdp_vllm.py`](file:///home/john/Programacao/Estudos/CyberRott/scripts/eval_wmdp_vllm.py).
+  - Agregação por maioria e self-consistency: `aggregate_majority_vote` e `aggregate_test_time_compute` em [`eval_wmdp_vllm.py`](file:///home/john/Programacao/Estudos/CyberRott/scripts/eval_wmdp_vllm.py).
+  - Amostragem paralela acelerada via vLLM (`--num_samples`, `--ttc_strategy`).

@@ -159,35 +159,51 @@ $$\mathcal{L}_{\text{GRPO}}(\theta) = -\mathbb{E}_{\substack{q \sim P(Q), \\ \{o
 
 ---
 
-## 🎯 Deterministic Verifiable Reward Suite
+## 🎯 Deterministic Verifiable Reward Suite (v1.3 & v1.4 PRM Upgrade)
 
-CyberRott v1.3 utilizes **three automated, verifiable reward functions** that grade policy rollouts deterministically without human annotator noise:
+CyberRott utilizes automated, verifiable reward functions that grade policy rollouts deterministically without human annotator noise. In **CyberRott v1.4**, the reward suite is upgraded from 3 outcome-based rewards to a **4-reward Process-Supervised system**:
 
 ```mermaid
 graph TD
     Prompt[Cybersecurity Prompt / Code Audit] --> Rollouts["Policy Rollouts (G = 8 Generations)"]
-    Rollouts --> RF1["CoT Integrity Reward (Weight: 0.30)"]
-    Rollouts --> RF2["Technical Accuracy Reward (Weight: 0.50)"]
-    Rollouts --> RF3["Sandbox Code Reward (Weight: 0.20)"]
+    Rollouts --> RF1["CoT Integrity Reward (Weight: 0.20)"]
+    Rollouts --> RF2["Technical Accuracy Reward (Weight: 0.40)"]
+    Rollouts --> RF3["Sandbox Code Reward (Weight: 0.15)"]
+    Rollouts --> RF4["Step-Level PRM Reward (Weight: 0.25 - v1.4)"]
     RF1 --> Aggregator["Weighted Composite Reward R_i"]
     RF2 --> Aggregator
     RF3 --> Aggregator
+    RF4 --> Aggregator
     Aggregator --> GroupNorm["Group Advantage Normalization A_i"]
     GroupNorm --> Backprop["GRPO Gradient Step (Policy Update)"]
 ```
 
-1. **CoT Integrity Reward (`cot_integrity_reward` — Weight: 0.30)**:
+1. **CoT Integrity Reward (`cot_integrity_reward` — Default Weight: 0.30 in v1.3 / 0.20 in v1.4)**:
    - Validates balanced XML delimiters: exact pair of opening `<think>` and closing `</think>` tags.
    - Enforces non-empty reasoning (minimum 100 characters within `<think>`).
    - Penalizes conversational evasiveness or generic disclaimers (*"As an AI model, I cannot provide assistance with exploits..."*) with immediate `0.0`.
-2. **Technical Accuracy Reward (`technical_accuracy_reward` — Weight: 0.50)**:
+2. **Technical Accuracy Reward (`technical_accuracy_reward` — Default Weight: 0.50 in v1.3 / 0.40 in v1.4)**:
    - Evaluates multiple-choice key extraction against ground truth (`A`, `B`, `C`, `D`).
    - Validates Common Weakness Enumeration identifiers (e.g., `CWE-121`, `CWE-89`, `CWE-416`).
    - Validates MITRE ATT&CK technique IDs (e.g., `T1059.001`, `T1190`, `T1055`).
-3. **Sandbox Code Verification Reward (`sandbox_code_reward` — Weight: 0.20)**:
+3. **Sandbox Code Verification Reward (`sandbox_code_reward` — Default Weight: 0.20 in v1.3 / 0.15 in v1.4)**:
    - Python AST static compilation verification via `compile(source, mode="exec")`.
    - Lexical parser validation for defensive YARA signatures (`rule`, `meta`, `strings`, `condition`).
    - YAML schema validation for Sigma threat detection rules.
+4. **Step-Level Process Reward Model (`prm_step_reward` — Weight: 0.25 in v1.4)**:
+   - Evaluates step-by-step analytical reasoning within the `<think>` block via `scripts/star_verifier.py::verify_prm_steps`.
+   - Grades coverage across the 7 mandatory analytical stages (surface enumeration, taint analysis, dangerous sink auditing, mitigation evaluation, CWE/MITRE classification, exploit blast radius, defensive patching).
+   - Audits formal deductive connectors (*therefore, because, thus, implies, consequent to*) while penalizing token looping and deductive contradictions.
+
+---
+
+### 🧬 CyberRott v1.4 Architectural Enhancements
+
+CyberRott v1.4 implements four key theoretical advancements:
+- **Weight-Decomposed Low-Rank Adaptation (DoRA)**: Decouples magnitude vector $m$ from directional updates ($\Delta W = m \frac{W_0 + BA}{\|W_0 + BA\|_F}$), configured with $r=64, \alpha=128$ across all linear projections via `--use_dora`.
+- **Process Reward Modeling (PRM)**: Mitigates reward hacking and sycophantic hallucinations by scoring each reasoning step individually using step-level verifiers.
+- **Test-Time Compute Scaling**: Enables Best-of-$N$ sampling and PRM-weighted Majority Voting via vLLM (`--preset_v1_4 --num_samples 8 --ttc_strategy best_of_n`), generating multiple hypotheses and aggregating via verifier consensus.
+- **Context Window Extension**: Expands generation capacity to 2,048 completion tokens, allowing the model to trace complex decompiled binaries, ROP gadgets, and multi-stage exploit chains without truncation.
 
 ---
 
