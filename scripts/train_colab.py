@@ -31,6 +31,78 @@ from transformers import (
 from peft import LoraConfig, TaskType
 from trl import SFTTrainer, SFTConfig
 
+# ==============================================================================
+# Backbone Scaling Catalog (v1.4)
+# ==============================================================================
+
+SUPPORTED_BACKBONES: Dict[str, Dict[str, Any]] = {
+    "phi4-mini": {
+        "model_id": "microsoft/Phi-4-mini-instruct",
+        "target_modules": "all-linear",
+        "stop_tokens": ["<|end|>", "<|endoftext|>"],
+        "default_max_seq_length": 4096,
+        "description": "Microsoft Phi-4-mini (3.82B) dense reasoning architecture",
+    },
+    "qwen2.5-coder-7b": {
+        "model_id": "Qwen/Qwen2.5-Coder-7B-Instruct",
+        "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+        "stop_tokens": ["<|im_end|>", "<|endoftext|>"],
+        "default_max_seq_length": 4096,
+        "description": "Qwen 2.5 Coder 7B Instruct specialized in code audit & reversing",
+    },
+    "phi4-14b": {
+        "model_id": "microsoft/Phi-4",
+        "target_modules": "all-linear",
+        "stop_tokens": ["<|im_end|>", "<|end|>", "<|endoftext|>"],
+        "default_max_seq_length": 4096,
+        "description": "Microsoft Phi-4 14B deep deductive reasoning model",
+    },
+}
+
+
+def resolve_backbone_config(backbone_or_model: str) -> Dict[str, Any]:
+    """Resolve a chave de backbone ou ID de modelo Hugging Face para a configuração canônica."""
+    if not backbone_or_model:
+        return SUPPORTED_BACKBONES["phi4-mini"]
+    key = backbone_or_model.lower().strip()
+    if key in SUPPORTED_BACKBONES:
+        return SUPPORTED_BACKBONES[key]
+    for b_key, b_cfg in SUPPORTED_BACKBONES.items():
+        if b_cfg["model_id"].lower() == key:
+            return b_cfg
+    return {
+        "model_id": backbone_or_model,
+        "target_modules": "all-linear",
+        "stop_tokens": ["<|end|>", "<|endoftext|>", "<|im_end|>"],
+        "default_max_seq_length": 4096,
+        "description": f"Custom architecture: {backbone_or_model}",
+    }
+
+
+def build_lora_config(
+    r: int = 32,
+    lora_alpha: int = 64,
+    lora_dropout: float = 0.05,
+    target_modules: Any = "all-linear",
+    use_dora: bool = False,
+    bias: str = "none",
+    task_type: Any = TaskType.CAUSAL_LM,
+) -> LoraConfig:
+    """Instancia LoraConfig com suporte transparente a DoRA e target modules flexíveis."""
+    lora_kwargs = {
+        "r": r,
+        "lora_alpha": lora_alpha,
+        "lora_dropout": lora_dropout,
+        "target_modules": target_modules,
+        "bias": bias,
+        "task_type": task_type,
+    }
+    if use_dora:
+        sig = inspect.signature(LoraConfig.__init__).parameters
+        if "use_dora" in sig:
+            lora_kwargs["use_dora"] = True
+    return LoraConfig(**lora_kwargs)
+
 
 def setup_hardware_optimizations(args: Optional[argparse.Namespace] = None) -> Dict[str, Any]:
     """
@@ -88,6 +160,13 @@ def parse_args():
 
     # Model Arguments
     model_group = parser.add_argument_group("Model")
+    model_group.add_argument(
+        "--backbone",
+        type=str,
+        default=None,
+        choices=["phi4-mini", "qwen2.5-coder-7b", "phi4-14b"],
+        help="Pre-configured backbone architecture from SUPPORTED_BACKBONES."
+    )
     model_group.add_argument(
         "--model_name_or_path",
         type=str,
@@ -159,6 +238,19 @@ def parse_args():
             "Target modules for LoRA. Use 'all-linear' to cover qkv_proj, o_proj, "
             "gate_up_proj, and down_proj on Phi-4, or provide comma-separated list."
         )
+    )
+    lora_group.add_argument(
+        "--use_dora",
+        action="store_true",
+        default=False,
+        help="Enable Weight-Decomposed Low-Rank Adaptation (DoRA) for enhanced capacity."
+    )
+    lora_group.add_argument(
+        "--preset_v1_4", "--v1_4", "--v1.4",
+        dest="preset_v1_4",
+        action="store_true",
+        default=False,
+        help="Activate CyberRott v1.4 defaults (DoRA, LoRA r=64/alpha=128, max_seq_length=2048)."
     )
 
     # Training / SFTConfig Arguments
@@ -244,7 +336,19 @@ def parse_args():
         help="Auto-optimize batch size, TF32, and FlashAttention for A100/H100/L4 (default: True)."
     )
 
-    return parser.parse_args()
+    parsed = parser.parse_args()
+    if parsed.preset_v1_4:
+        parsed.use_dora = True
+        parsed.lora_r = 64
+        parsed.lora_alpha = 128
+    if parsed.backbone:
+        cfg = resolve_backbone_config(parsed.backbone)
+        if parsed.model_name_or_path == "microsoft/Phi-4-mini-instruct":
+            parsed.model_name_or_path = cfg["model_id"]
+        if parsed.target_modules == "all-linear":
+            tm = cfg["target_modules"]
+            parsed.target_modules = "all-linear" if tm == "all-linear" else ",".join(tm)
+    return parsed
 
 
 def train():
@@ -295,21 +399,20 @@ def train():
             trust_remote_code=False
         )
 
-    # 3. Configure LoRA targets tailored for Phi-4
+    # 3. Configure LoRA targets tailored for base model
     if args.target_modules.strip().lower() == "all-linear":
         target_modules = "all-linear"
     else:
         target_modules = [m.strip() for m in args.target_modules.split(",") if m.strip()]
 
-    peft_config = LoraConfig(
+    peft_config = build_lora_config(
         r=args.lora_r,
         lora_alpha=args.lora_alpha,
         lora_dropout=args.lora_dropout,
         target_modules=target_modules,
-        bias="none",
-        task_type=TaskType.CAUSAL_LM,
+        use_dora=getattr(args, "use_dora", False),
     )
-    print(f"3. LoRA configured: r={args.lora_r}, alpha={args.lora_alpha}, target_modules={target_modules}")
+    print(f"3. LoRA configured: r={args.lora_r}, alpha={args.lora_alpha}, target_modules={target_modules}, use_dora={getattr(args, 'use_dora', False)}")
 
     # 4. Load Dataset
     print("4. Loading dataset...")

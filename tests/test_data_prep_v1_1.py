@@ -32,6 +32,7 @@ from scripts.data_prep import (
     load_anchor_samples,
     prepare_dataset,
     fetch_single_dataset_stream,
+    PRESET_CONFIGS,
 )
 
 
@@ -69,6 +70,16 @@ class TestDatasetCatalog:
         assert CYBERROTT_V1_1_DATASETS["goose_reason"]["requires_cyber_filter"] is True
         assert CYBERROTT_V1_1_DATASETS["code_feedback"]["requires_cyber_filter"] is True
         assert CYBERROTT_V1_1_DATASETS["open_r1"]["requires_cyber_filter"] is True
+
+    def test_v1_4_preset_targets(self):
+        from scripts.data_prep import PRESET_V1_4_TARGETS
+        total_v1_4 = sum(PRESET_V1_4_TARGETS.values())
+        assert total_v1_4 >= 4500, f"Total do preset v1.4 deve cobrir corpus completo (obtido {total_v1_4})"
+        assert PRESET_V1_4_TARGETS["goose_reason"] == 1600
+        assert PRESET_V1_4_TARGETS["code_feedback"] == 1100
+        assert PRESET_V1_4_TARGETS["open_r1"] == 900
+        assert PRESET_V1_4_TARGETS["cyber_native"] == 600
+        assert PRESET_V1_4_TARGETS["cybersecurity_v1"] == 500
 
 
 class TestScrubberAndRefusalRemoval:
@@ -368,5 +379,52 @@ class TestLocalV1ReuseAndSafetyGuards:
             )
             # Como nenhum item bate no regex, encerra com 0 amostras ao bater no teto de 250 inspeções
             assert len(collected) == 0
+
+
+class TestPresetV14:
+    """Valida configurações do preset v1.4 de alta densidade e preservação de metadados PRM/GRPO."""
+
+    def test_preset_configs_structure(self):
+        assert "v1.0" in PRESET_CONFIGS
+        assert "v1.1" in PRESET_CONFIGS
+        assert "v1.4" in PRESET_CONFIGS
+        cfg14 = PRESET_CONFIGS["v1.4"]
+        assert cfg14["target_samples"] >= 4680
+        assert cfg14["anchor_repeat"] == 20
+        assert cfg14["preserve_metadata"] is True
+
+    def test_v14_local_reuse_preserves_prm_metadata(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            base_file = os.path.join(temp_dir, "cyberrott_final_train.jsonl")
+            with open(base_file, "w", encoding="utf-8") as f:
+                for i in range(2100):
+                    item = {
+                        "messages": [
+                            {"role": "user", "content": f"Security Prompt {i}"},
+                            {"role": "assistant", "content": f"<think>\nAnalysis Step {i}\n</think>\n\nVerdict {i}"}
+                        ],
+                        "expected_cwe": "CWE-89",
+                        "expected_mitre": "T1190",
+                        "prm_ground_truth": {"stage": "vulnerability_verdict"}
+                    }
+                    f.write(json.dumps(item) + "\n")
+
+            mock_new = []
+            with patch("scripts.data_prep.fetch_multi_hf_datasets", return_value=mock_new):
+                result = prepare_dataset(
+                    anchor_file="data/dataset_cyber_ready.jsonl",
+                    anchor_repeat=1,
+                    preset="v1.4",
+                    output_file=base_file
+                )
+                assert len(result) >= 2100
+                first_local = [r for r in result if r.get("expected_cwe") == "CWE-89"][0]
+                assert first_local["expected_cwe"] == "CWE-89"
+                assert first_local["expected_mitre"] == "T1190"
+                assert "prm_ground_truth" in first_local
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
 
 

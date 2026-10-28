@@ -242,6 +242,10 @@ flowchart TD
 
 ## 🔮 CyberRott v1.4 Roadmap & Next-Generation Techniques (Breaking the 45%+ Barrier)
 
+> [!NOTE]
+> **Implementation Status: Fully Implemented & Operational**.
+> All 7 architectural enhancements of CyberRott v1.4—Self-Distillation STaR, Full-Scale 4,680 GRPO, DoRA ($r=64/\alpha=128$), Step-Level PRM, Test-Time Compute (Best-of-$N$ & Majority Voting), 2048 Context Extension, and Multi-Backbone Portability—are fully implemented in the codebase and backed by automated unit tests.
+
 To push compact 3.8B–7B parameter models past the **45%+ accuracy boundary** on WMDP-Cyber, CyberRott v1.4 introduces seven coordinated architectural and algorithmic enhancements:
 
 ```mermaid
@@ -376,6 +380,64 @@ python scripts/eval_wmdp_vllm.py \
     --max_tokens 768 \
     --output_dir eval_results
 ```
+
+### 3. CyberRott v1.4 Next-Generation Operational Workflow (Breaking the 45%+ Barrier)
+
+The v1.4 enhancements can be invoked directly through automated presets and command-line flags across all pipeline stages:
+
+#### Step 1: Dataset Preparation v1.4 (Full 4,680 Curated Corpus)
+```bash
+python scripts/data_prep.py \
+    --preset v1.4 \
+    --output data/cyberrott_final_train.jsonl \
+    --seed 42
+```
+
+#### Step 2: Self-Distillation STaR Loop v1.4 ($N=16$ Rollouts with Step-Level PRM & DoRA)
+```bash
+python scripts/train_star.py \
+    --preset_v1_4 \
+    --model_name_or_path microsoft/Phi-4-mini-instruct \
+    --dataset_path data/cyberrott_final_train.jsonl \
+    --num_candidates 16 \
+    --use_dora \
+    --dora_rank 64 \
+    --dora_alpha 128 \
+    --enable_prm \
+    --output_dir ./CyberRott-v1.4-STaR
+```
+
+#### Step 3: Full-Scale GRPO v1.4 (4,680 Samples, DoRA $r=64$, 4th PRM Reward, 2048 Context)
+```bash
+python scripts/train_grpo.py \
+    --preset_v1_4 \
+    --model_name_or_path microsoft/Phi-4-mini-instruct \
+    --dataset_name data/cyberrott_final_train.jsonl \
+    --anchor_file data/dataset_cyber_ready.jsonl \
+    --output_dir ./CyberRott-v1.4-GRPO \
+    --num_generations 8 \
+    --use_dora \
+    --dora_rank 64 \
+    --dora_alpha 128 \
+    --max_completion_length 2048 \
+    --include_prm_reward \
+    --backbone phi4-mini
+```
+*Note: For scaling to larger backbones, pass `--backbone qwen2.5-coder-7b` or `--backbone phi4-14b`.*
+
+#### Step 4: Test-Time Compute (TTC) Evaluation via vLLM ($N=8$, Best-of-$N$, 2048 Tokens)
+```bash
+python scripts/eval_wmdp_vllm.py \
+    --preset_v1_4 \
+    --model_name ./CyberRott-v1.4-GRPO \
+    --num_samples 8 \
+    --ttc_strategy best_of_n \
+    --temperature 0.6 \
+    --top_p 0.95 \
+    --max_tokens 2048 \
+    --output_dir eval_results
+```
+*(Or evaluate PRM-weighted self-consistency with `--ttc_strategy weighted_sc` or `--ttc_strategy majority_vote`)*
 
 ---
 

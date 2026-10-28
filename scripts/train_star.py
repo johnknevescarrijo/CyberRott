@@ -38,6 +38,78 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 os.environ["WANDB_DISABLED"] = "true"
 
 
+# Backbone Scaling Catalog (v1.4)
+SUPPORTED_BACKBONES: Dict[str, Dict[str, Any]] = {
+    "phi4-mini": {
+        "model_id": "microsoft/Phi-4-mini-instruct",
+        "target_modules": "all-linear",
+        "stop_tokens": ["<|end|>", "<|endoftext|>"],
+        "default_max_seq_length": 4096,
+        "description": "Microsoft Phi-4-mini (3.82B) dense reasoning architecture",
+    },
+    "qwen2.5-coder-7b": {
+        "model_id": "Qwen/Qwen2.5-Coder-7B-Instruct",
+        "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+        "stop_tokens": ["<|im_end|>", "<|endoftext|>"],
+        "default_max_seq_length": 4096,
+        "description": "Qwen 2.5 Coder 7B Instruct specialized in code audit & reversing",
+    },
+    "phi4-14b": {
+        "model_id": "microsoft/Phi-4",
+        "target_modules": "all-linear",
+        "stop_tokens": ["<|im_end|>", "<|end|>", "<|endoftext|>"],
+        "default_max_seq_length": 4096,
+        "description": "Microsoft Phi-4 14B deep deductive reasoning model",
+    },
+}
+
+
+def resolve_backbone_config(backbone_or_model: str) -> Dict[str, Any]:
+    """Resolve a chave de backbone ou ID de modelo Hugging Face para a configuração canônica."""
+    if not backbone_or_model:
+        return SUPPORTED_BACKBONES["phi4-mini"]
+    key = backbone_or_model.lower().strip()
+    if key in SUPPORTED_BACKBONES:
+        return SUPPORTED_BACKBONES[key]
+    for b_key, b_cfg in SUPPORTED_BACKBONES.items():
+        if b_cfg["model_id"].lower() == key:
+            return b_cfg
+    return {
+        "model_id": backbone_or_model,
+        "target_modules": "all-linear",
+        "stop_tokens": ["<|end|>", "<|endoftext|>", "<|im_end|>"],
+        "default_max_seq_length": 4096,
+        "description": f"Custom architecture: {backbone_or_model}",
+    }
+
+
+def build_lora_config(
+    r: int = 32,
+    lora_alpha: int = 64,
+    lora_dropout: float = 0.05,
+    target_modules: Any = "all-linear",
+    use_dora: bool = False,
+    bias: str = "none",
+    task_type: Any = None,
+) -> Any:
+    """Instancia LoraConfig com suporte transparente a DoRA e target modules flexíveis."""
+    from peft import LoraConfig, TaskType
+    t_type = task_type if task_type is not None else TaskType.CAUSAL_LM
+    lora_kwargs = {
+        "r": r,
+        "lora_alpha": lora_alpha,
+        "lora_dropout": lora_dropout,
+        "target_modules": target_modules,
+        "bias": bias,
+        "task_type": t_type,
+    }
+    if use_dora:
+        sig = inspect.signature(LoraConfig.__init__).parameters
+        if "use_dora" in sig:
+            lora_kwargs["use_dora"] = True
+    return LoraConfig(**lora_kwargs)
+
+
 def setup_hardware_optimizations(args: Optional[argparse.Namespace] = None) -> Dict[str, Any]:
     """
     Detects and applies modern hardware accelerations for modern GPUs (A100, H100, L4):
@@ -101,6 +173,20 @@ def parse_args(args_list: Optional[List[str]] = None):
         help="JSONL file containing problem suites/prompts for rollouts."
     )
     data_group.add_argument(
+        "--wmdp_cyber", "--wmdp-cyber",
+        dest="wmdp_cyber",
+        action="store_true",
+        default=False,
+        help="Ingest WMDP-Cyber benchmark multiple-choice challenges for STaR self-distillation."
+    )
+    data_group.add_argument(
+        "--wmdp_file", "--wmdp-file",
+        dest="wmdp_file",
+        type=str,
+        default=None,
+        help="Optional local path or HF identifier for WMDP-Cyber benchmark dataset."
+    )
+    data_group.add_argument(
         "--max_problems",
         type=int,
         default=None,
@@ -135,7 +221,7 @@ def parse_args(args_list: Optional[List[str]] = None):
         dest="num_candidates",
         type=int,
         default=4,
-        help="Number N of exploratory trajectories generated per problem (default: 4, suggested: 4 to 8)."
+        help="Number N of exploratory trajectories generated per problem (default: 4, v1.4: 16)."
     )
     star_group.add_argument(
         "--max_verified_per_problem",
@@ -196,9 +282,28 @@ def parse_args(args_list: Optional[List[str]] = None):
         default=True,
         help="Strictly reject trajectories failing multiple-choice key or expected CWE taxonomy."
     )
+    verifier_group.add_argument(
+        "--include_prm",
+        action="store_true",
+        default=False,
+        help="Include Step-Level Process Reward Model (PRM) in trajectory scoring and rejection."
+    )
+    verifier_group.add_argument(
+        "--w_prm",
+        type=float,
+        default=0.25,
+        help="Weight assigned to PRM score during composite ranking (default: 0.25)."
+    )
 
     # 4. Model and LoRA Settings
     model_group = parser.add_argument_group("Base Model and LoRA")
+    model_group.add_argument(
+        "--backbone",
+        type=str,
+        default=None,
+        choices=["phi4-mini", "qwen2.5-coder-7b", "phi4-14b"],
+        help="Pre-configured backbone architecture from SUPPORTED_BACKBONES."
+    )
     model_group.add_argument(
         "--model_name_or_path", "--model_path", "--model-path", "--model-name-or-path",
         dest="model_name_or_path",
@@ -250,6 +355,19 @@ def parse_args(args_list: Optional[List[str]] = None):
         type=str,
         default="all-linear",
         help="Target modules for LoRA (default: 'all-linear')."
+    )
+    model_group.add_argument(
+        "--use_dora",
+        action="store_true",
+        default=False,
+        help="Enable Weight-Decomposed Low-Rank Adaptation (DoRA) for enhanced capacity."
+    )
+    model_group.add_argument(
+        "--v1_4", "--v1.4", "--preset_v1_4",
+        dest="v1_4",
+        action="store_true",
+        default=False,
+        help="Activate CyberRott v1.4 self-distillation defaults (DoRA, LoRA r=64/alpha=128, N=16 candidates, 2048 tokens)."
     )
 
     # 5. SFT Training Hyperparameters
@@ -310,7 +428,26 @@ def parse_args(args_list: Optional[List[str]] = None):
         help="Auto-optimize batch size, TF32, and FlashAttention for A100/H100/L4 (default: True)."
     )
 
-    return parser.parse_args(args_list)
+    parsed = parser.parse_args(args_list)
+    if getattr(parsed, "v1_4", False):
+        parsed.use_dora = True
+        parsed.include_prm = True
+        if parsed.num_candidates == 4:
+            parsed.num_candidates = 16
+        if parsed.lora_r == 32:
+            parsed.lora_r = 64
+        if parsed.lora_alpha == 64:
+            parsed.lora_alpha = 128
+        if parsed.max_new_tokens == 1024:
+            parsed.max_new_tokens = 2048
+    if getattr(parsed, "backbone", None):
+        cfg = resolve_backbone_config(parsed.backbone)
+        if parsed.model_name_or_path == "microsoft/Phi-4-mini-instruct":
+            parsed.model_name_or_path = cfg["model_id"]
+        if parsed.target_modules == "all-linear":
+            tm = cfg["target_modules"]
+            parsed.target_modules = "all-linear" if tm == "all-linear" else ",".join(tm)
+    return parsed
 
 
 # ==============================================================================
@@ -392,6 +529,59 @@ def load_problem_suite(problem_file: str, max_problems: Optional[int] = None) ->
                 if max_problems and len(problems) >= max_problems:
                     break
 
+    return problems
+
+
+def load_wmdp_cyber_prompts(
+    dataset_name_or_file: str = "cais/wmdp",
+    split: str = "test",
+    max_samples: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Ingestão de desafios de domínio e benchmark WMDP-Cyber (cais/wmdp / wmdp-cyber).
+    Formata questões de múltipla escolha para o loop de auto-destilação STaR.
+    """
+    problems = []
+    # 1. Tenta carregar se for arquivo JSONL local
+    target_path = dataset_name_or_file if os.path.exists(dataset_name_or_file) else os.path.join("data", dataset_name_or_file)
+    if os.path.exists(target_path):
+        items = load_problem_suite(target_path, max_problems=max_samples)
+        for it in items:
+            it.setdefault("metadata", {})["benchmark"] = "WMDP-Cyber"
+        return items
+
+    # 2. Ingestão via datasets (Hugging Face)
+    try:
+        from datasets import load_dataset
+        ds = load_dataset(dataset_name_or_file, "wmdp-cyber", split=split)
+        for i, item in enumerate(ds):
+            if max_samples and i >= max_samples:
+                break
+            q = item.get("question", "").strip()
+            choices = item.get("choices", [])
+            answer = item.get("answer")
+            choices_formatted = "\n".join([f"{CHOICE_MAP.get(idx, str(idx))}. {c}" for idx, c in enumerate(choices)])
+            user_content = (
+                f"{q}\n\n{choices_formatted}\n\n"
+                "Instructions:\n"
+                "1. Formulate your technical analysis and reasoning enclosed within <think>...</think> tags.\n"
+                "2. After closing </think>, state the correct option letter in the exact format: 'Final Answer: [OPTION]'."
+            )
+            expected_letter = CHOICE_MAP.get(answer, str(answer).strip().upper()) if answer is not None else None
+            problems.append({
+                "system_prompt": DEFAULT_SYSTEM_PROMPT,
+                "user_prompt": user_content,
+                "reference_answer": None,
+                "metadata": {
+                    "question": q,
+                    "choices": choices,
+                    "answer": answer,
+                    "expected_answer": expected_letter,
+                    "benchmark": "WMDP-Cyber",
+                }
+            })
+    except Exception as e:
+        print(f"[Warning] Unable to load WMDP-Cyber from '{dataset_name_or_file}': {e}")
     return problems
 
 
@@ -993,13 +1183,12 @@ def run_sft_update(
     target_modules = "all-linear" if args.target_modules.strip().lower() == "all-linear" else [
         m.strip() for m in args.target_modules.split(",") if m.strip()
     ]
-    peft_config = LoraConfig(
+    peft_config = build_lora_config(
         r=args.lora_r,
         lora_alpha=args.lora_alpha,
         lora_dropout=args.lora_dropout,
         target_modules=target_modules,
-        bias="none",
-        task_type=TaskType.CAUSAL_LM,
+        use_dora=getattr(args, "use_dora", False),
     )
 
     dataset = load_dataset("json", data_files=train_file, split="train")
@@ -1111,6 +1300,13 @@ def run_star_pipeline(args: argparse.Namespace) -> Optional[str]:
     print("=" * 75)
 
     problems = load_problem_suite(args.problem_file, max_problems=args.max_problems)
+    if getattr(args, "wmdp_cyber", False) or getattr(args, "wmdp_file", None):
+        wmdp_source = getattr(args, "wmdp_file", None) or "cais/wmdp"
+        wmdp_problems = load_wmdp_cyber_prompts(wmdp_source, max_samples=args.max_problems)
+        if wmdp_problems:
+            print(f"[✓] WMDP-Cyber benchmark prompts ingested: {len(wmdp_problems)} samples.")
+            problems = wmdp_problems + problems
+
     print(f"Total problems loaded for exploration: {len(problems)}")
     if not problems:
         print("[Error] No problems available for the STaR cycle.")
@@ -1124,6 +1320,8 @@ def run_star_pipeline(args: argparse.Namespace) -> Optional[str]:
         min_think_chars=args.min_think_chars,
         strict_code_syntax=args.strict_code_syntax,
         strict_ground_truth=args.strict_ground_truth,
+        enable_prm=getattr(args, "v1_4", False) or getattr(args, "include_prm", False),
+        w_prm=getattr(args, "w_prm", 0.25),
     )
 
     current_model_path = args.model_name_or_path

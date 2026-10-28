@@ -198,6 +198,8 @@ try:
         CHOICE_MAP,
         check_refusals,
         STaRVerifier,
+        verify_prm_steps,
+        compute_prm_step_score,
     )
 except ImportError:
     from star_verifier import (
@@ -208,9 +210,85 @@ except ImportError:
         CHOICE_MAP,
         check_refusals,
         STaRVerifier,
+        verify_prm_steps,
+        compute_prm_step_score,
     )
 
 verifier = STaRVerifier()
+
+# ==============================================================================
+# Backbone Scaling Catalog (v1.4)
+# ==============================================================================
+
+SUPPORTED_BACKBONES: Dict[str, Dict[str, Any]] = {
+    "phi4-mini": {
+        "model_id": "microsoft/Phi-4-mini-instruct",
+        "target_modules": "all-linear",
+        "stop_tokens": ["<|end|>", "<|endoftext|>"],
+        "default_max_seq_length": 4096,
+        "description": "Microsoft Phi-4-mini (3.82B) dense reasoning architecture",
+    },
+    "qwen2.5-coder-7b": {
+        "model_id": "Qwen/Qwen2.5-Coder-7B-Instruct",
+        "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+        "stop_tokens": ["<|im_end|>", "<|endoftext|>"],
+        "default_max_seq_length": 4096,
+        "description": "Qwen 2.5 Coder 7B Instruct specialized in code audit & reversing",
+    },
+    "phi4-14b": {
+        "model_id": "microsoft/Phi-4",
+        "target_modules": "all-linear",
+        "stop_tokens": ["<|im_end|>", "<|end|>", "<|endoftext|>"],
+        "default_max_seq_length": 4096,
+        "description": "Microsoft Phi-4 14B deep deductive reasoning model",
+    },
+}
+
+
+def resolve_backbone_config(backbone_or_model: str) -> Dict[str, Any]:
+    """Resolve a chave de backbone ou ID de modelo Hugging Face para a configuração canônica."""
+    if not backbone_or_model:
+        return SUPPORTED_BACKBONES["phi4-mini"]
+    key = backbone_or_model.lower().strip()
+    if key in SUPPORTED_BACKBONES:
+        return SUPPORTED_BACKBONES[key]
+    for b_key, b_cfg in SUPPORTED_BACKBONES.items():
+        if b_cfg["model_id"].lower() == key:
+            return b_cfg
+    return {
+        "model_id": backbone_or_model,
+        "target_modules": "all-linear",
+        "stop_tokens": ["<|end|>", "<|endoftext|>", "<|im_end|>"],
+        "default_max_seq_length": 4096,
+        "description": f"Custom architecture: {backbone_or_model}",
+    }
+
+
+def build_lora_config(
+    r: int = 32,
+    lora_alpha: int = 64,
+    lora_dropout: float = 0.05,
+    target_modules: Any = "all-linear",
+    use_dora: bool = False,
+    bias: str = "none",
+    task_type: Any = None,
+) -> Any:
+    """Instancia LoraConfig com suporte transparente a DoRA e target modules flexíveis."""
+    from peft import LoraConfig, TaskType
+    t_type = task_type if task_type is not None else TaskType.CAUSAL_LM
+    lora_kwargs = {
+        "r": r,
+        "lora_alpha": lora_alpha,
+        "lora_dropout": lora_dropout,
+        "target_modules": target_modules,
+        "bias": bias,
+        "task_type": t_type,
+    }
+    if use_dora:
+        sig = inspect.signature(LoraConfig.__init__).parameters
+        if "use_dora" in sig:
+            lora_kwargs["use_dora"] = True
+    return LoraConfig(**lora_kwargs)
 
 
 # ==============================================================================
@@ -798,6 +876,31 @@ def sandbox_code_reward(prompts: Any, completions: Any, **kwargs) -> List[float]
     return rewards
 
 
+def prm_step_reward(prompts: Any, completions: Any, **kwargs) -> List[float]:
+    """
+    Reward Function 4: Step-Level Process Reward Model (PRM) (Weight: 0.25)
+    - Avalia a cadeia de raciocínio (<think>...</think>) em granularidade de passos lógicos.
+    - Bonifica a cobertura dos 7 estágios do protocolo analítico CyberRott v1.4.
+    - Bonifica conectores dedutivos formais (therefore, because, implies, etc.).
+    - Penaliza sumariamente tentativas de reward hacking por repetição artificial de linhas/n-gramas.
+    - Penaliza contradições internas entre a conclusão do raciocínio e a resposta final.
+    """
+    rewards = []
+    w_prm = kwargs.get("w_prm", 0.25)
+
+    for c in completions:
+        text = extract_text_from_completion(c)
+        if not text:
+            rewards.append(0.0)
+            continue
+
+        prm_info = verify_prm_steps(text)
+        prm_score = float(prm_info.get("prm_score", 0.0))
+        rewards.append(round(min(1.0, prm_score) * w_prm, 4))
+
+    return rewards
+
+
 # ==============================================================================
 # Dataset Loading with GitHub Fallback and Verifiability Curation
 # ==============================================================================
@@ -1026,9 +1129,10 @@ def run_dry_run_validation(dataset_records: List[Dict[str, Any]]) -> bool:
     r_cot = cot_integrity_reward(prompts_batch, completions_batch, **kwargs)
     r_acc = technical_accuracy_reward(prompts_batch, completions_batch, **kwargs)
     r_box = sandbox_code_reward(prompts_batch, completions_batch, **kwargs)
+    r_prm = prm_step_reward(prompts_batch, completions_batch, **kwargs)
 
     print("\n" + "-" * 70)
-    print("EVALUATION TEST RESULTS FOR THE 3 REWARD FUNCTIONS (TEST BATCH):")
+    print("EVALUATION TEST RESULTS FOR THE 4 DETERMINISTIC REWARD FUNCTIONS (TEST BATCH):")
     print("-" * 70)
     scenarios = [
         "1. Ideal Candidate (Full CoT + Clean Code)",
@@ -1038,16 +1142,18 @@ def run_dry_run_validation(dataset_records: List[Dict[str, Any]]) -> bool:
     ]
 
     for idx, name in enumerate(scenarios):
-        total_r = round(r_cot[idx] + r_acc[idx] + r_box[idx], 4)
+        total_r = round(r_cot[idx] + r_acc[idx] + r_box[idx] + r_prm[idx], 4)
         print(f"\n{name}:")
         print(f"  • cot_integrity_reward (weight 0.30):    {r_cot[idx]:.4f}")
         print(f"  • technical_accuracy_reward (weight 0.50): {r_acc[idx]:.4f}")
         print(f"  • sandbox_code_reward (weight 0.20):      {r_box[idx]:.4f}")
-        print(f"  ➜ TOTAL COMBINED REWARD:                 {total_r:.4f} / 1.0000")
+        print(f"  • prm_step_reward (weight 0.25):          {r_prm[idx]:.4f}")
+        print(f"  ➜ TOTAL COMBINED REWARD:                 {total_r:.4f}")
 
     assert r_cot[1] == 0.0, "Failure: Alignment refusal did not zero cot_integrity_reward!"
     assert r_box[1] == 0.0, "Failure: Alignment refusal did not zero sandbox_code_reward!"
     assert r_cot[2] == 0.0, "Failure: Missing <think> tags did not zero cot_integrity_reward!"
+    assert r_prm[2] == 0.0, "Failure: Missing <think> tags did not zero prm_step_reward!"
     assert r_box[3] < 0.20, "Failure: Python syntax error was not penalized in sandbox_code_reward!"
     assert r_cot[0] > 0.0, "Failure: Ideal candidate must receive positive CoT reward!"
 
@@ -1326,6 +1432,13 @@ def parse_args():
     # Model and Adapter Arguments
     model_group = parser.add_argument_group("Model")
     model_group.add_argument(
+        "--backbone",
+        type=str,
+        default=None,
+        choices=["phi4-mini", "qwen2.5-coder-7b", "phi4-14b"],
+        help="Pre-configured backbone architecture from SUPPORTED_BACKBONES."
+    )
+    model_group.add_argument(
         "--model_name_or_path",
         type=str,
         default="microsoft/Phi-4-mini-instruct",
@@ -1488,6 +1601,32 @@ def parse_args():
         help="Random seed for reproducibility."
     )
 
+    grpo_group.add_argument(
+        "--full_scale",
+        action="store_true",
+        default=False,
+        help="Train on the full high-density corpus (4680+ samples)."
+    )
+    grpo_group.add_argument(
+        "--preset_v1_4", "--v1_4", "--v1.4",
+        dest="preset_v1_4",
+        action="store_true",
+        default=False,
+        help="Activate CyberRott v1.4 full-scale preset (DoRA, LoRA r=64/alpha=128, PRM rewards, 2048 completion length, full 4680 corpus)."
+    )
+    grpo_group.add_argument(
+        "--w_prm",
+        type=float,
+        default=0.25,
+        help="Weight for step-level Process Reward Model (PRM) reward function (default: 0.25)."
+    )
+    grpo_group.add_argument(
+        "--include_prm",
+        action="store_true",
+        default=False,
+        help="Explicitly activate step-level PRM reward function in the GRPO reward suite."
+    )
+
     # LoRA / PEFT Arguments
     lora_group = parser.add_argument_group("LoRA")
     lora_group.add_argument(
@@ -1507,6 +1646,12 @@ def parse_args():
         type=float,
         default=0.05,
         help="LoRA dropout rate (default: 0.05)."
+    )
+    lora_group.add_argument(
+        "--use_dora",
+        action="store_true",
+        default=False,
+        help="Enable Weight-Decomposed Low-Rank Adaptation (DoRA) for enhanced capacity."
     )
 
     # vLLM Arguments
@@ -1567,7 +1712,25 @@ def parse_args():
         help="Hugging Face repository ID if --push_to_hub is active."
     )
 
-    return parser.parse_args()
+    parsed = parser.parse_args()
+
+    if parsed.preset_v1_4:
+        parsed.use_dora = True
+        parsed.lora_r = 64
+        parsed.lora_alpha = 128
+        parsed.max_completion_length = 2048
+        parsed.max_samples = 4680
+        parsed.include_prm = True
+
+    if parsed.full_scale:
+        parsed.max_samples = 4680
+
+    if parsed.backbone:
+        cfg = resolve_backbone_config(parsed.backbone)
+        if parsed.model_name_or_path == "microsoft/Phi-4-mini-instruct":
+            parsed.model_name_or_path = cfg["model_id"]
+
+    return parsed
 
 
 def main():
@@ -1647,14 +1810,18 @@ def main():
     enable_fast_generation_with_kv_cache(base_model)
 
     # 8. Setup fresh LoRA adapter for GRPO training
-    print(f"[*] Configuring clean LoRA for RL phase: r={args.lora_r}, alpha={args.lora_alpha}, target=all-linear...")
-    lora_config = LoraConfig(
+    target_modules = "all-linear"
+    if getattr(args, "backbone", None):
+        cfg = resolve_backbone_config(args.backbone)
+        target_modules = cfg["target_modules"]
+
+    print(f"[*] Configuring clean LoRA for RL phase: r={args.lora_r}, alpha={args.lora_alpha}, target={target_modules}, use_dora={getattr(args, 'use_dora', False)}...")
+    lora_config = build_lora_config(
         r=args.lora_r,
         lora_alpha=args.lora_alpha,
         lora_dropout=args.lora_dropout,
-        target_modules="all-linear",
-        task_type=TaskType.CAUSAL_LM,
-        bias="none",
+        target_modules=target_modules,
+        use_dora=getattr(args, "use_dora", False),
     )
 
     # 9. Configure GRPOConfig (TRL)
@@ -1808,6 +1975,11 @@ def main():
         technical_accuracy_reward,
         sandbox_code_reward,
     ]
+    if getattr(args, "include_prm", False) or getattr(args, "preset_v1_4", False):
+        prm_weighted = functools.partial(prm_step_reward, w_prm=getattr(args, "w_prm", 0.25))
+        functools.update_wrapper(prm_weighted, prm_step_reward)
+        reward_suite.append(prm_weighted)
+        print(f"[Reward Suite] Step-Level PRM reward active in GRPO suite (weight: {getattr(args, 'w_prm', 0.25)}).")
 
     apply_grpo_compatibility_patches()
     if not hasattr(base_model, "warnings_issued"):
@@ -1828,7 +2000,7 @@ def main():
     else:
         trainer_kwargs["processing_class"] = tokenizer
 
-    print("[*] Initializing GRPOTrainer with 3 verifiable reward functions...")
+    print(f"[*] Initializing GRPOTrainer with {len(reward_suite)} verifiable reward functions...")
     trainer = GRPOTrainer(**trainer_kwargs)
 
     eos_ids = get_eos_token_ids(tokenizer)

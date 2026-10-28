@@ -81,6 +81,45 @@ CYBERROTT_V1_1_DATASETS: Dict[str, Dict[str, Any]] = {
 }
 
 # =============================================================================
+# 1.1 DATASET PRESET CONFIGURATIONS (v1.0, v1.1, v1.4)
+# =============================================================================
+
+PRESET_CONFIGS: Dict[str, Dict[str, Any]] = {
+    "v1.0": {
+        "name": "CyberRott v1.0 Baseline",
+        "description": "GooseReason classic 2.5k single-stream baseline",
+        "target_samples": 2500,
+        "anchor_repeat": 20,
+        "datasets": ["goose_reason"],
+        "preserve_metadata": False,
+    },
+    "v1.1": {
+        "name": "CyberRott v1.1 Multi-Dataset Expansion",
+        "description": "Multi-dataset catalog (~10k candidate CoT pool, 4.2k target)",
+        "target_samples": 4200,
+        "anchor_repeat": 20,
+        "datasets": list(CYBERROTT_V1_1_DATASETS.keys()),
+        "preserve_metadata": False,
+    },
+    "v1.4": {
+        "name": "CyberRott v1.4 High-Density Scaling & PRM",
+        "description": "Full high-density corpus (4680+ samples, 20x Golden Anchors, preserved GRPO/PRM metadata)",
+        "target_samples": 4680,
+        "anchor_repeat": 20,
+        "datasets": list(CYBERROTT_V1_1_DATASETS.keys()),
+        "preserve_metadata": True,
+    },
+}
+
+PRESET_V1_4_TARGETS: Dict[str, int] = {
+    "goose_reason": 1600,
+    "code_feedback": 1100,
+    "open_r1": 900,
+    "cyber_native": 600,
+    "cybersecurity_v1": 500,
+}
+
+# =============================================================================
 # 2. IN-DEPTH CYBERSECURITY & SYSTEM LEVEL KEYWORDS LIST
 # =============================================================================
 
@@ -762,7 +801,7 @@ def prepare_dataset(
     local_base_samples: List[Dict[str, Any]] = []
     reusing_local_v1 = False
 
-    if preset == "v1.1" and dataset_keys is None and goose_limit is None:
+    if preset in ["v1.1", "v1.4"] and dataset_keys is None and goose_limit is None:
         candidate_base = None
         if os.path.exists(output_file):
             candidate_base = output_file
@@ -788,17 +827,22 @@ def prepare_dataset(
                 print(f"[Warning] Failed to inspect local base '{candidate_base}': {e}")
                 temp_samples = []
 
-            if len(temp_samples) >= 2000:
+            min_reuse = 2000 if preset == "v1.1" else 4000
+            if len(temp_samples) >= min_reuse or (preset == "v1.4" and len(temp_samples) >= 2000):
                 reusing_local_v1 = True
                 print(
-                    f"[✓] Local v1.0 base detected ({len(temp_samples)} samples)! "
-                    f"Reusing local GooseReason and downloading only the 4 new v1.1 datasets..."
+                    f"[✓] Local {preset} base detected ({len(temp_samples)} samples)! "
+                    f"Reusing local corpus with PRM/GRPO metadata preservation..."
                 )
                 for item in temp_samples:
                     if scrub_refusals:
                         scrubbed = scrub_refusal_and_boilerplate(item)
                         if not scrubbed:
                             continue
+                        if preset == "v1.4":
+                            for k, v in item.items():
+                                if k not in scrubbed:
+                                    scrubbed[k] = v
                         item = scrubbed
                     if enforce_think:
                         msgs = item.get("messages", [])
@@ -811,18 +855,24 @@ def prepare_dataset(
     cyber_regex = compile_cyber_regex(CYBER_KEYWORDS)
     hf_samples = []
 
-    if preset == "v1.1":
+    if preset in ["v1.1", "v1.4"]:
         active_keys = dataset_keys or list(CYBERROTT_V1_1_DATASETS.keys())
         if reusing_local_v1:
-            active_keys = [k for k in active_keys if k != "goose_reason"]
-            print(f"[*] Local reuse active: GooseReason omitted. Remaining datasets: {active_keys}")
+            if preset == "v1.4" and len(local_base_samples) >= 4680:
+                active_keys = []
+                print(f"[*] Mode v1.4: Full high-density corpus ({len(local_base_samples)} samples) satisfied locally.")
+            else:
+                active_keys = [k for k in active_keys if k != "goose_reason"]
+                print(f"[*] Local reuse active: GooseReason omitted. Remaining datasets: {active_keys}")
         else:
-            print(f"[*] Mode v1.1 Active: Processing {len(active_keys)} datasets from catalog...")
+            print(f"[*] Mode {preset} Active: Processing {len(active_keys)} datasets from catalog...")
 
         if active_keys:
+            custom_limits = PRESET_V1_4_TARGETS if preset == "v1.4" else None
             hf_samples = fetch_multi_hf_datasets(
                 dataset_keys=active_keys,
                 cyber_regex=cyber_regex,
+                custom_limits=custom_limits,
                 scrub_refusals=scrub_refusals,
                 enforce_think=enforce_think
             )
@@ -895,9 +945,9 @@ if __name__ == "__main__":
 
     parser.add_argument(
         "--preset",
-        choices=["v1.0", "v1.1"],
+        choices=["v1.0", "v1.1", "v1.4"],
         default="v1.0",
-        help="Dataset preset: 'v1.0' (GooseReason classic 2.5k) or 'v1.1' (Multi-Dataset ~10k CoT)"
+        help="Dataset preset: 'v1.0' (GooseReason classic 2.5k), 'v1.1' (Multi-Dataset ~10k CoT), or 'v1.4' (Full High-Density 4680+ with PRM metadata)"
     )
     parser.add_argument(
         "--list_datasets",

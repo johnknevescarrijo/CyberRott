@@ -120,6 +120,84 @@ CYBERROTT_STAGES = {
     ],
 }
 
+# 2.1 Especificação Expandida dos 7 Estágios Analíticos do CyberRott v1.4
+ANALYTICAL_7_STAGES = {
+    "surface_enumeration": {
+        "name": "1. Attack Surface Enumeration & Threat Modeling",
+        "keywords": ["surface", "entry point", "protocol", "input", "exposure", "endpoint", "handler",
+                     "superfície", "ponto de entrada", "vetor de entrada"],
+        "patterns": [
+            re.compile(r"\b(?:surface|entry[\s\-_]?points?|threat[\s\-_]?model(?:ing)?|exposure|endpoints?|handlers?|attack\s+surface)\b", re.IGNORECASE),
+            re.compile(r"superf[íi]cie|pontos?\s+de\s+entrada|vetor(?:es)?\s+de\s+entrada|an[áa]lise\s+de\s+superf[íi]cie", re.IGNORECASE),
+        ],
+    },
+    "taint_data_flow": {
+        "name": "2. Taint Analysis & Data Flow Tracking",
+        "keywords": ["taint", "flow", "untrusted", "source", "propagation", "parameter", "buffer",
+                     "fluxo", "rastreamento", "propagação"],
+        "patterns": [
+            re.compile(r"\b(?:taint(?:ed)?(?:\s+analysis)?|data[\s\-_]?flow|untrusted|source|propagat(?:ion|es?)|parameters?|buffers?)\b", re.IGNORECASE),
+            re.compile(r"fluxo\s+de\s+dados|taint\s+analysis|rastreamento|propaga[çc][ãa]o|mapeamento\s+de\s+fluxo", re.IGNORECASE),
+        ],
+    },
+    "dangerous_sink_boundary": {
+        "name": "3. Dangerous Sink & Boundary Invariant Auditing",
+        "keywords": ["sink", "boundary", "overflow", "invariant", "check", "condition", "vulnerability", "primitive", "injection", "corruption"],
+        "patterns": [
+            re.compile(r"\b(?:dangerous\s+sinks?|vulnerable\s+sinks?|sinks?|boundar(?:y|ies)|boundary\s+invariants?|overflow|invariants?|checks?|conditions?|vulnerabilit(?:y|ies)|primitives?|injections?|corruptions?)\b", re.IGNORECASE),
+            re.compile(r"sinks?\s+perigosos?|vulnerable\s+sinks?|detec[çc][ãa]o\s+de\s+sinks?|invariantes?|limites?|corrup[çc][ãa]o", re.IGNORECASE),
+        ],
+    },
+    "defensive_mitigation": {
+        "name": "4. Defensive Mitigation & Control Inspection",
+        "keywords": ["mitigation", "control", "aslr", "dep", "nx", "canary", "validation", "sanitization", "bounds", "filter"],
+        "patterns": [
+            re.compile(r"\b(?:defensive\s+mitigations?|mitigat(?:ion|ions|ing)?|controls?|control\s+inspection|aslr|dep|nx|canar(?:y|ies)|validat(?:ion|ing)|sanitiz(?:ation|ing)|bounds?|filters?)\b", re.IGNORECASE),
+            re.compile(r"mitiga[çc][õo]es?|controles?|sanitiza[çc][ãa]o|valida[çc][ãa]o|medidas?\s+defensivas?|avalia[çc][ãa]o\s+de\s+sanitiza[çc][ãa]o", re.IGNORECASE),
+        ],
+    },
+    "taxonomic_classification": {
+        "name": "5. Taxonomic Classification CWE/ATT&CK",
+        "keywords": ["cwe", "cve", "att&ck", "taxonomy", "classification", "weakness"],
+        "patterns": [
+            re.compile(r"\b(?:taxonomic\s+classification|cwe(?:\-\d+)?|cve(?:\-\d+)?|att&ck|mitre|t\d{4}(?:\.\d{3})?|taxonom(?:y|ies)|classificat(?:ion|ions)|weakness(?:es)?)\b", re.IGNORECASE),
+            re.compile(r"classifica[çc][ãa]o\s+taxon[ôo]mica|taxonomia|cwe|cve|mitre|common\s+weakness\s+enumeration", re.IGNORECASE),
+        ],
+    },
+    "exploit_feasibility_distractors": {
+        "name": "6. Exploit Feasibility & Distractor Elimination",
+        "keywords": ["impact", "feasibility", "bypass", "cvss", "severity", "option", "eliminate", "incorrect", "why"],
+        "patterns": [
+            re.compile(r"\b(?:exploit\s+feasibility|distractor\s+elimination|impacts?|feasibilit(?:y|ies)|bypass(?:es|ing)?|cvss|severit(?:y|ies)|options?|eliminat(?:e|ing|ion)|incorrect|alternatives?)\b", re.IGNORECASE),
+            re.compile(r"impacto\s+potencial|viabilidade|elimina[çc][ãa]o\s+de\s+(?:distratores|alternativas)|alternativas?|op[çc][õo]es?", re.IGNORECASE),
+        ],
+    },
+    "defensive_remediation": {
+        "name": "7. Defensive Remediation & Verdict",
+        "keywords": ["remediation", "patch", "fix", "verdict", "conclusion", "final", "secure"],
+        "patterns": [
+            re.compile(r"\b(?:defensive\s+remediation|hardened\s+code\s+patches?|remediat(?:ion|ions|ing)?|patch(?:es)?|fix(?:es)?|verdicts?|conclus(?:ion|ions)|finals?|secures?)\b", re.IGNORECASE),
+            re.compile(r"remedia[çc][ãa]o|corre[çc][ãa]o|sugest[ãa]o\s+de\s+corre[çc][ãa]o|veredito|conclus[ãa]o|seguro|patch", re.IGNORECASE),
+        ],
+    },
+}
+
+# Aliases diretos para acesso por chaves canônicas v1.4
+ANALYTICAL_7_STAGES["attack_surface"] = ANALYTICAL_7_STAGES["surface_enumeration"]
+ANALYTICAL_7_STAGES["taint_analysis"] = ANALYTICAL_7_STAGES["taint_data_flow"]
+ANALYTICAL_7_STAGES["exploit_feasibility"] = ANALYTICAL_7_STAGES["exploit_feasibility_distractors"]
+CYBERROTT_V14_STAGES = ANALYTICAL_7_STAGES
+
+# Conectores Dedutivos Formais para Step-Level PRM
+DEDUCTIVE_CONNECTORS = [
+    r"\btherefore\b", r"\bbecause\b", r"\bimplies\b", r"\bconsequently\b",
+    r"\bsince\b", r"\bgiven that\b", r"\bhowever\b", r"\bthus\b", r"\bhence\b",
+    r"\bfurthermore\b", r"\bmoreover\b", r"\bas a result\b",
+    r"\bportanto\b", r"\blogo\b", r"\bpois\b", r"\bvisto que\b", r"\bdado que\b",
+    r"\bporém\b", r"\bcontudo\b", r"\bassim\b", r"\bconsequentemente\b",
+]
+DEDUCTIVE_REGEX = re.compile("|".join(DEDUCTIVE_CONNECTORS), re.IGNORECASE)
+
 # 3. Marcadores estruturais pós-raciocínio
 FINAL_RESPONSE_STRUCTURE_PATTERNS = [
     re.compile(r"(?:^|\n)\s*(?:FATO|FACT)\s*:", re.IGNORECASE),
@@ -129,6 +207,282 @@ FINAL_RESPONSE_STRUCTURE_PATTERNS = [
 ]
 
 CHOICE_MAP = {0: "A", 1: "B", 2: "C", 3: "D"}
+
+
+# ==============================================================================
+# Funções Auxiliares de Step-Level PRM (v1.4)
+# ==============================================================================
+
+def split_reasoning_steps(think_text: str) -> List[str]:
+    """Divide o bloco de raciocínio <think> em passos dedutivos lógicos."""
+    if not think_text or not think_text.strip():
+        return []
+
+    # 1. Tentar quebrar por passos numerados ou marcadores de estágios / bullets
+    pattern = re.compile(
+        r"(?:^|\n)(?:(?:Step|Passo|\#\#|\d+[\.\)]|[\-\*•])\s+|(?:Stage|Estágio)\s+\d+[:\s\-])",
+        re.MULTILINE
+    )
+    raw_steps = [s.strip() for s in pattern.split(think_text) if s and s.strip()]
+    if len(raw_steps) >= 2:
+        return raw_steps
+
+    # 2. Fallback para parágrafos duplos
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n+", think_text) if p.strip()]
+    if len(paragraphs) >= 2:
+        return paragraphs
+
+    # 3. Fallback para sentenças longas
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+(?=[A-Z0-9])", think_text) if len(s.strip()) > 20]
+    if len(sentences) >= 2:
+        return sentences
+
+    return [think_text.strip()]
+
+
+def compute_prm_repetition_ratio(text: str) -> float:
+    """Calcula a proporção de repetição de n-gramas ou linhas no texto para detectar reward hacking."""
+    if not text:
+        return 0.0
+
+    lines = [l.strip().lower() for l in text.split("\n") if len(l.strip()) > 15]
+    if len(lines) > 3:
+        unique_lines = set(lines)
+        line_rep = 1.0 - (len(unique_lines) / len(lines))
+        if line_rep > 0.3:
+            return float(line_rep)
+
+    words = re.findall(r"\b\w+\b", text.lower())
+    if len(words) < 20:
+        return 0.0
+
+    four_grams = [tuple(words[i:i + 4]) for i in range(len(words) - 3)]
+    if not four_grams:
+        return 0.0
+    unique_grams = set(four_grams)
+    ratio = 1.0 - (len(unique_grams) / len(four_grams))
+    return float(max(0.0, min(1.0, ratio)))
+
+
+def detect_reasoning_contradiction(think_text: str, final_text: str) -> bool:
+    """
+    Detecta contradição lógica severa entre o raciocínio (<think>) e a resposta final.
+    Exemplo: Concluir que a opção A é a única correta dentro do <think> e responder Resposta Final: C.
+    """
+    final_mc = extract_mc_answer(final_text)
+    if not final_mc:
+        return False
+
+    # Procura conclusão declarativa ao final do think
+    think_tail = think_text[-800:] if len(think_text) > 800 else think_text
+
+    conclusion_patterns = [
+        re.compile(r"(?:therefore|conclude|conclusion|answer is|correct option is|correct answer is|thus|logo|portanto|resposta [ée]|alternativa correta [ée])[:\s*\[\(]*([A-D])\b", re.IGNORECASE),
+        re.compile(r"(?:option|alternativa|op[çc][ãa]o)\s+([A-D])\s+(?:is\s+(?:the\s+)?(?:only\s+)?(?:correct|valid|right|answer)|[ée]\s+a\s+(?:[úu]nica\s+)?(?:correta|resposta))", re.IGNORECASE),
+        re.compile(r"\b([A-D])\s+is\s+(?:the\s+)?(?:only\s+)?(?:correct|valid|right)\s+answer\b", re.IGNORECASE),
+    ]
+
+    concluded_letters = []
+    for pat in conclusion_patterns:
+        for m in pat.finditer(think_tail):
+            concluded_letters.append(m.group(1).upper())
+
+    if concluded_letters:
+        last_concluded = concluded_letters[-1]
+        if last_concluded != final_mc:
+            return True
+
+    # Checar se a opção final foi explicitamente eliminada/rejeitada no think
+    elimination_patterns = [
+        re.compile(rf"(?:option|alternativa|op[çc][ãa]o)\s+{final_mc}\s+(?:is (?:in)?correct|is false|is wrong|[ée] incorreta|[ée] falsa)", re.IGNORECASE),
+        re.compile(rf"(?:eliminate|eliminando|descartamos?)\s+(?:option|alternativa)?\s*{final_mc}\b", re.IGNORECASE),
+    ]
+    for epat in elimination_patterns:
+        match = epat.search(think_text)
+        if match:
+            m_str = match.group(0).lower()
+            if any(term in m_str for term in ["incorrect", "false", "wrong", "incorreta", "falsa", "eliminate", "eliminando", "descart"]):
+                return True
+
+    return False
+
+
+def verify_prm_steps(response: str, prompt: str = "") -> Dict[str, Any]:
+    """
+    Process-Supervised Reward Modeling (PRM) - Verificador de passos de raciocínio (v1.4).
+    Avalia a integridade do processo de pensamento em granularidade de passo:
+    - Extração rigorosa do bloco <think>...</think>.
+    - Segmentação em passos dedutivos lógicos.
+    - Avaliação de cada passo (cobertura dos 7 estágios analíticos e conectores dedutivos formais).
+    - Detecção de reward hacking por repetição artificial de tokens/linhas.
+    - Detecção de contradição interna entre a deliberação do <think> e a resposta final.
+    """
+    empty_result = {
+        "prm_score": 0.0,
+        "num_steps": 0,
+        "stages_covered": [],
+        "has_contradiction": False,
+        "repetition_ratio": 0.0,
+        "step_scores": [],
+    }
+
+    if not response or not isinstance(response, str):
+        return empty_result
+
+    # 1. Presença e integridade das tags <think>
+    think_open = response.find("<think>")
+    think_close = response.find("</think>")
+
+    if think_open == -1 or think_close == -1 or think_close <= think_open:
+        return empty_result
+
+    think_content = response[think_open + len("<think>"):think_close].strip()
+    final_content = response[think_close + len("</think>"):].strip()
+
+    if not think_content:
+        return empty_result
+
+    # 2. Detecção de repetição / reward hacking
+    repetition_ratio = compute_prm_repetition_ratio(think_content)
+
+    # 3. Detecção de contradição entre <think> e veredito final
+    has_contradiction = detect_reasoning_contradiction(think_content, final_content)
+
+    # 4. Divisão em passos dedutivos
+    steps = split_reasoning_steps(think_content)
+    num_steps = len(steps)
+
+    if num_steps == 0:
+        return empty_result
+
+    # 5. Avaliação Step-Level
+    stages_covered_set = set()
+    step_scores = []
+
+    for step in steps:
+        step_score = 0.0
+        step_clean = step.strip()
+        if not step_clean:
+            step_scores.append(0.0)
+            continue
+
+        # a) Checagem de estágios analíticos v1.4 ou análise de alternativas
+        step_covered_any = False
+        for stage_id, stage_data in CYBERROTT_V14_STAGES.items():
+            for pat in stage_data["patterns"]:
+                if pat.search(step_clean):
+                    stages_covered_set.add(stage_id)
+                    step_covered_any = True
+                    break
+
+        # Também bonifica análise explícita de alternativas (A, B, C, D)
+        if re.search(r"\b(?:option|alternativa|op[çc][ãa]o)\s+[A-D]\b", step_clean, re.IGNORECASE):
+            step_covered_any = True
+
+        if step_covered_any:
+            step_score += 0.40
+
+        # b) Conectores dedutivos formais
+        if DEDUCTIVE_REGEX.search(step_clean):
+            step_score += 0.30
+
+        # c) Substância / volume informativo do passo
+        words_count = len(step_clean.split())
+        if words_count >= 15:
+            step_score += 0.30
+        elif words_count >= 8:
+            step_score += 0.15
+
+        step_scores.append(round(min(1.0, step_score), 4))
+
+    # 6. Agregação do PRM Score Global
+    stages_list = sorted(list(stages_covered_set))
+    stages_coverage = len(stages_list) / 7.0
+
+    mean_step_score = (sum(step_scores) / num_steps) if num_steps > 0 else 0.0
+
+    # Composição: 40% cobertura de estágios + 40% qualidade média dos passos + 20% granularidade
+    step_granularity_bonus = min(1.0, num_steps / 4.0)
+    raw_prm = (0.40 * stages_coverage) + (0.40 * mean_step_score) + (0.20 * step_granularity_bonus)
+
+    # Penalização por repetição artificial (reward hacking)
+    if repetition_ratio > 0.35:
+        raw_prm = 0.0
+    elif repetition_ratio > 0.15:
+        penalty_factor = max(0.0, 1.0 - (repetition_ratio * 2.0))
+        raw_prm *= penalty_factor
+
+    # Penalização severa por contradição interna
+    if has_contradiction:
+        raw_prm = 0.0
+
+    prm_score = round(max(0.0, min(1.0, raw_prm)), 4)
+
+    return {
+        "prm_score": prm_score,
+        "num_steps": num_steps,
+        "stages_covered": stages_list,
+        "has_contradiction": has_contradiction,
+        "repetition_ratio": round(repetition_ratio, 4),
+        "step_scores": step_scores,
+    }
+
+
+def compute_prm_step_score(response: str, prompt: str = "") -> float:
+    """Função utilitária que executa verify_prm_steps e retorna o score normalizado em [0.0, 1.0]."""
+    prm_info = verify_prm_steps(response, prompt)
+    return float(prm_info.get("prm_score", 0.0))
+
+
+def compute_composite_score(
+    format_score: float,
+    gt_score: float,
+    code_score: float = 1.0,
+    prm_score: float = 0.0,
+    w_format: float = 0.30,
+    w_gt: float = 0.50,
+    w_code: float = 0.20,
+    w_prm: float = 0.0,
+) -> float:
+    """
+    Calcula a pontuação composta ponderada com compatibilidade retroativa e suporte a w_prm.
+    """
+    total_w = w_format + w_gt + w_code + w_prm
+    if total_w <= 0:
+        return 0.0
+    val = (
+        format_score * w_format +
+        gt_score * w_gt +
+        code_score * w_code +
+        prm_score * w_prm
+    ) / total_w
+    return round(float(val), 4)
+
+
+def compute_v14_composite_score(
+    format_score: float,
+    gt_score: float,
+    prm_score: float,
+    code_score: float = 1.0,
+    w_format: float = 0.20,
+    w_gt: float = 0.40,
+    w_prm: float = 0.25,
+    w_code: float = 0.15,
+) -> float:
+    """
+    Calcula a pontuação composta balanceada da versão 1.4 incorporando o Process Reward Model:
+    Pesos padrão: Format (0.20), Ground-Truth (0.40), Step-Level PRM (0.25), Code Sandbox (0.15).
+    """
+    total_w = w_format + w_gt + w_prm + w_code
+    if total_w <= 0:
+        return 0.0
+    val = (
+        format_score * w_format +
+        gt_score * w_gt +
+        prm_score * w_prm +
+        code_score * w_code
+    ) / total_w
+    return round(float(val), 4)
 
 
 # ==============================================================================
@@ -257,6 +611,46 @@ def verify_format_integrity(
 
     passed = len(reasons) == 0
     return passed, reasons, metrics
+
+
+def verify_cot_format(
+    candidate: str,
+    min_think_chars: int = 80,
+    min_think_words: int = 15,
+    min_final_chars: int = 10,
+) -> Tuple[bool, float, Dict[str, Any]]:
+    """
+    Verifica a conformidade do formato CoT (<think>...</think> + resposta final).
+    Retorna (format_ok, format_score, metrics), onde format_score é um valor normalizado em [0.0, 1.0].
+    """
+    passed, reasons, metrics = verify_format_integrity(
+        candidate,
+        min_think_chars=min_think_chars,
+        min_think_words=min_think_words,
+        min_final_chars=min_final_chars,
+    )
+    stages_cov = float(metrics.get("stages_coverage", 0.0))
+    struct_markers = int(metrics.get("structure_markers_found", 0))
+
+    if passed:
+        score = 0.6 + 0.3 * stages_cov + 0.1 * min(1.0, struct_markers / 2.0)
+    elif "<think>" in candidate and "</think>" in candidate:
+        score = 0.3 + 0.2 * stages_cov
+    elif "<think>" in candidate:
+        score = 0.1
+    else:
+        score = 0.0
+
+    score = round(max(0.0, min(1.0, score)), 4)
+    metrics["format_score"] = score
+    metrics["passed"] = passed
+    metrics["reasons"] = reasons
+    return passed, score, metrics
+
+
+def extract_answer_cot(candidate: str) -> Optional[str]:
+    """Extrai a resposta de múltipla escolha (A, B, C ou D) do texto CoT."""
+    return extract_mc_answer(candidate)
 
 
 # ==============================================================================
@@ -599,6 +993,9 @@ class STaRVerifier:
         strict_ground_truth: bool = True,
         strict_code_syntax: bool = True,
         check_inside_think_code: bool = False,
+        include_prm: bool = False,
+        w_prm: float = 0.0,
+        enable_prm: Optional[bool] = None,
     ):
         self.min_think_chars = min_think_chars
         self.min_think_words = min_think_words
@@ -607,11 +1004,18 @@ class STaRVerifier:
         self.strict_ground_truth = strict_ground_truth
         self.strict_code_syntax = strict_code_syntax
         self.check_inside_think_code = check_inside_think_code
+        self.include_prm = enable_prm if enable_prm is not None else include_prm
+        self.enable_prm = self.include_prm
+        self.w_prm = w_prm
 
     @staticmethod
     def check_refusals(text: str) -> List[str]:
         """Detecta recusas conversacionais e epistêmicas no texto."""
         return check_refusals(text)
+
+    def score_prm_steps(self, candidate: str, prompt: str = "") -> Dict[str, Any]:
+        """Calcula a avaliação detalhada do Process Reward Model nos passos de raciocínio."""
+        return verify_prm_steps(candidate, prompt)
 
     def verify_candidate(
         self,
@@ -647,6 +1051,10 @@ class STaRVerifier:
         all_reasons.extend(code_reasons)
         metrics["code_syntax"] = code_metrics
 
+        # 4. Step-Level PRM (v1.4)
+        prm_metrics = verify_prm_steps(candidate)
+        metrics["prm"] = prm_metrics
+
         # Decisão de aprovação estrita
         passed = True
         if self.strict_format and not fmt_ok:
@@ -656,29 +1064,38 @@ class STaRVerifier:
         if self.strict_code_syntax and not code_ok:
             passed = False
 
-        # Cálculo da pontuação de qualidade contínua (0.0 a 1.0)
-        # Componentes:
-        # - Ground truth: 0.40
-        # - Integridade básica de formato: 0.20
-        # - Cobertura dos 7 estágios analíticos: 0.20
-        # - Sintaxe de código e estrutura: 0.20
-        score = 0.0
+        if self.include_prm or getattr(self, "enable_prm", False):
+            # Integração ponderada v1.4 com Process Reward Model
+            prm_score = float(prm_metrics.get("prm_score", 0.0))
+            fmt_score = 1.0 if fmt_ok else 0.0
+            gt_score = 1.0 if gt_ok else 0.0
+            cd_score = 1.0 if code_ok else 0.0
+            score = compute_v14_composite_score(
+                format_score=fmt_score,
+                gt_score=gt_score,
+                prm_score=prm_score,
+                code_score=cd_score,
+                w_prm=self.w_prm if self.w_prm > 0 else 0.25,
+            )
+        else:
+            # Cálculo clássico retrocompatível (0.0 a 1.0)
+            score = 0.0
 
-        if gt_ok:
-            score += 0.40
+            if gt_ok:
+                score += 0.40
 
-        if fmt_ok:
-            score += 0.20
+            if fmt_ok:
+                score += 0.20
 
-        # Bônus de cobertura de estágios analíticos (0 a 0.20)
-        stages_cov = fmt_metrics.get("stages_coverage", 0.0)
-        score += float(stages_cov) * 0.20
+            # Bônus de cobertura de estágios analíticos (0 a 0.20)
+            stages_cov = fmt_metrics.get("stages_coverage", 0.0)
+            score += float(stages_cov) * 0.20
 
-        # Código e estrutura
-        if code_ok:
-            score += 0.10
-        if fmt_metrics.get("structure_markers_found", 0) > 0:
-            score += 0.10
+            # Código e estrutura
+            if code_ok:
+                score += 0.10
+            if fmt_metrics.get("structure_markers_found", 0) > 0:
+                score += 0.10
 
         # Se falhar estritamente, penaliza a pontuação
         if not passed:
@@ -694,25 +1111,62 @@ class STaRVerifier:
             metrics=metrics,
         )
 
+    def verify_and_score(
+        self,
+        problem: Dict[str, Any],
+        candidate: str,
+        use_prm: Optional[bool] = None,
+    ) -> VerificationResult:
+        """Executa verificação e pontuação com suporte explícito a PRM v1.4."""
+        prev_include = self.include_prm
+        prev_enable = getattr(self, "enable_prm", False)
+        if use_prm is not None:
+            self.include_prm = use_prm
+            self.enable_prm = use_prm
+        try:
+            return self.verify_candidate(problem, candidate)
+        finally:
+            self.include_prm = prev_include
+            self.enable_prm = prev_enable
+
     def filter_and_rank_candidates(
         self,
         problem: Dict[str, Any],
-        candidates: List[str]
+        candidates: List[str],
+        use_prm: Optional[bool] = None,
     ) -> List[Tuple[str, VerificationResult]]:
         """
         Aplica Rejection & Pruning:
         - Descarta candidatos reprovados (passed == False).
         - Ordena os candidatos aprovados pela pontuação de qualidade (decrescente).
         """
-        verified = []
-        for cand in candidates:
-            res = self.verify_candidate(problem, cand)
-            if res.passed:
-                verified.append((cand, res))
+        prev_include = self.include_prm
+        prev_enable = getattr(self, "enable_prm", False)
+        if use_prm is not None:
+            self.include_prm = use_prm
+            self.enable_prm = use_prm
+        try:
+            verified = []
+            for cand in candidates:
+                res = self.verify_candidate(problem, cand)
+                if res.passed:
+                    verified.append((cand, res))
 
-        # Ordenar por pontuação decrescente
-        verified.sort(key=lambda item: item[1].score, reverse=True)
-        return verified
+            # Ordenar por pontuação decrescente
+            verified.sort(key=lambda item: item[1].score, reverse=True)
+            return verified
+        finally:
+            self.include_prm = prev_include
+            self.enable_prm = prev_enable
+
+    def rank_candidates(
+        self,
+        problem: Dict[str, Any],
+        candidates: List[str],
+        use_prm: Optional[bool] = None,
+    ) -> List[Tuple[str, VerificationResult]]:
+        """Alias para filter_and_rank_candidates."""
+        return self.filter_and_rank_candidates(problem, candidates, use_prm=use_prm)
 
 
 # ==============================================================================
