@@ -17,6 +17,11 @@ from scripts.star_verifier import (
     verify_code_syntax,
     extract_code_blocks,
     extract_mc_answer,
+    verify_prm_steps,
+    compute_prm_step_score,
+    compute_composite_score,
+    compute_v14_composite_score,
+    CYBERROTT_V14_STAGES,
 )
 
 def test_refusal_detection():
@@ -207,10 +212,135 @@ def test_rejection_and_ranking():
     assert top_res.score > 0.8
     print("✅ test_rejection_and_ranking passou com sucesso.")
 
+def test_prm_step_verification():
+    # Candidato completo abordando múltiplos estágios com conectores dedutivos
+    cand = (
+        "<think>\n"
+        "1. Attack Surface Enumeration: The exposed endpoint accepts untrusted HTTP request parameters.\n"
+        "2. Taint Analysis & Data Flow: Consequently, the taint propagates directly to the backend query.\n"
+        "3. Dangerous Sink Auditing: The database cursor executes an unsanitized string format query.\n"
+        "4. Defensive Mitigation Inspection: Since no input validation or parameterization exists, boundary checks fail.\n"
+        "5. Taxonomic Classification: Therefore, this maps directly to Common Weakness Enumeration CWE-89.\n"
+        "6. Exploit Feasibility & Elimination: Option A is the only viable mechanism; alternatives B, C, D are eliminated because they address memory safety.\n"
+        "7. Defensive Remediation: Therefore, we apply parameterized queries to neutralize the sink.\n"
+        "</think>\n\n"
+        "FATO: Injeção de SQL detectada.\n"
+        "Resposta Final: [A]"
+    )
+    res = verify_prm_steps(cand)
+    assert res["prm_score"] > 0.70
+    assert res["num_steps"] >= 4
+    assert len(res["stages_covered"]) >= 5
+    assert not res["has_contradiction"]
+    assert res["repetition_ratio"] < 0.20
+    assert len(res["step_scores"]) == res["num_steps"]
+    assert compute_prm_step_score(cand) == res["prm_score"]
+
+def test_prm_contradiction_detection():
+    # Pensa que A é a resposta correta e elimina B/C/D, mas na resposta final diz C
+    cand_contradict = (
+        "<think>\n"
+        "Step 1: Surface Enumeration and input flow analysis.\n"
+        "Step 2: Sink detection identifies SQL injection primitive.\n"
+        "Step 3: Option C is incorrect and completely invalid in this context.\n"
+        "Step 4: Therefore, the correct answer is A.\n"
+        "</think>\n\n"
+        "Resposta Final: [C]"
+    )
+    res = verify_prm_steps(cand_contradict)
+    assert res["has_contradiction"] is True
+    assert res["prm_score"] == 0.0
+
+def test_prm_repetition_penalty():
+    # Reward hacking por repetição artificial de linhas
+    repetitive_cot = (
+        "<think>\n"
+        + ("Attack Surface Enumeration: Analyzing the attack surface in depth.\n" * 10)
+        + "</think>\n\n"
+        "Resposta Final: [A]"
+    )
+    res = verify_prm_steps(repetitive_cot)
+    assert res["repetition_ratio"] > 0.30
+    assert res["prm_score"] == 0.0
+
+def test_prm_missing_think():
+    res = verify_prm_steps("Direct answer without think tags.")
+    assert res["prm_score"] == 0.0
+    assert res["num_steps"] == 0
+
+def test_composite_scores():
+    # compute_composite_score retrocompatível
+    score_default = compute_composite_score(format_score=1.0, gt_score=1.0, code_score=1.0)
+    assert score_default == 1.0
+
+    score_partial = compute_composite_score(format_score=1.0, gt_score=0.0, code_score=1.0)
+    assert score_partial == 0.50
+
+    # compute_v14_composite_score
+    score_v14 = compute_v14_composite_score(
+        format_score=1.0,
+        gt_score=1.0,
+        prm_score=1.0,
+        code_score=1.0
+    )
+    assert score_v14 == 1.0
+
+    score_v14_zero_gt = compute_v14_composite_score(
+        format_score=1.0,
+        gt_score=0.0,
+        prm_score=1.0,
+        code_score=1.0
+    )
+    # 0.20 + 0.0 + 0.25 + 0.15 = 0.60
+    assert score_v14_zero_gt == 0.60
+
+def test_analytical_7_stages_and_star_verifier_methods():
+    from scripts.star_verifier import ANALYTICAL_7_STAGES
+    assert "attack_surface" in ANALYTICAL_7_STAGES
+    assert "taint_analysis" in ANALYTICAL_7_STAGES
+    assert "dangerous_sink_boundary" in ANALYTICAL_7_STAGES
+    assert "defensive_mitigation" in ANALYTICAL_7_STAGES
+    assert "taxonomic_classification" in ANALYTICAL_7_STAGES
+    assert "exploit_feasibility" in ANALYTICAL_7_STAGES
+    assert "defensive_remediation" in ANALYTICAL_7_STAGES
+
+    verifier = STaRVerifier(enable_prm=True)
+    assert verifier.enable_prm is True
+
+    cand = (
+        "<think>\n"
+        "1. Attack surface and entry point.\n"
+        "2. Taint analysis data flow.\n"
+        "3. Dangerous sink detected.\n"
+        "4. Defensive mitigation evaluated.\n"
+        "5. Classification CWE-89.\n"
+        "6. Exploit feasibility confirmed.\n"
+        "7. Defensive remediation provided.\n"
+        "</think>\n\n"
+        "FATO: A análise confirma a vulnerabilidade.\n"
+        "Resposta Final: [A]"
+    )
+    prm_dict = verifier.score_prm_steps(cand)
+    assert "prm_score" in prm_dict
+    assert prm_dict["prm_score"] > 0.0
+
+    res = verifier.verify_and_score({"answer": "A"}, cand, use_prm=True)
+    assert res.passed
+    assert res.score > 0.0
+
+    ranked = verifier.rank_candidates({"answer": "A"}, [cand], use_prm=True)
+    assert len(ranked) == 1
+
 if __name__ == "__main__":
     test_refusal_detection()
     test_think_format_integrity()
     test_ground_truth_matching()
     test_code_syntax_sandbox()
     test_rejection_and_ranking()
+    test_prm_step_verification()
+    test_prm_contradiction_detection()
+    test_prm_repetition_penalty()
+    test_prm_missing_think()
+    test_composite_scores()
+    test_analytical_7_stages_and_star_verifier_methods()
     print("\n🎉 TODOS OS TESTES UNITÁRIOS DO STAR_VERIFIER FORAM APROVADOS!")
