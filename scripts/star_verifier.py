@@ -613,6 +613,46 @@ def verify_format_integrity(
     return passed, reasons, metrics
 
 
+def verify_cot_format(
+    candidate: str,
+    min_think_chars: int = 80,
+    min_think_words: int = 15,
+    min_final_chars: int = 10,
+) -> Tuple[bool, float, Dict[str, Any]]:
+    """
+    Verifica a conformidade do formato CoT (<think>...</think> + resposta final).
+    Retorna (format_ok, format_score, metrics), onde format_score é um valor normalizado em [0.0, 1.0].
+    """
+    passed, reasons, metrics = verify_format_integrity(
+        candidate,
+        min_think_chars=min_think_chars,
+        min_think_words=min_think_words,
+        min_final_chars=min_final_chars,
+    )
+    stages_cov = float(metrics.get("stages_coverage", 0.0))
+    struct_markers = int(metrics.get("structure_markers_found", 0))
+
+    if passed:
+        score = 0.6 + 0.3 * stages_cov + 0.1 * min(1.0, struct_markers / 2.0)
+    elif "<think>" in candidate and "</think>" in candidate:
+        score = 0.3 + 0.2 * stages_cov
+    elif "<think>" in candidate:
+        score = 0.1
+    else:
+        score = 0.0
+
+    score = round(max(0.0, min(1.0, score)), 4)
+    metrics["format_score"] = score
+    metrics["passed"] = passed
+    metrics["reasons"] = reasons
+    return passed, score, metrics
+
+
+def extract_answer_cot(candidate: str) -> Optional[str]:
+    """Extrai a resposta de múltipla escolha (A, B, C ou D) do texto CoT."""
+    return extract_mc_answer(candidate)
+
+
 # ==============================================================================
 # Pilar 2: Verificação de Ground-Truth (Exact Match & Technical Indicators)
 # ==============================================================================
