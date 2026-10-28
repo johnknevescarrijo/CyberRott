@@ -211,3 +211,74 @@ class TestHardwareOptimizationsAndDefaults:
         assert mock_args.per_device_train_batch_size == 2
         assert mock_args.gradient_accumulation_steps == 8
 
+
+class TestStarV14Upgrades:
+    """Valida as melhorias da v1.4 no loop STaR (N=16 rollouts, 2048 tokens, DoRA, backbone scaling e PRM)."""
+
+    def test_v14_star_preset_defaults(self):
+        args = parse_args(["--preset_v1_4"])
+        assert args.num_candidates == 16
+        assert args.max_new_tokens == 2048
+        assert args.use_dora is True
+        assert args.lora_r == 64
+        assert args.lora_alpha == 128
+        assert args.include_prm is True
+
+    def test_star_pipeline_v14_dry_run_n16(self):
+        temp_out = tempfile.mkdtemp()
+        try:
+            args = parse_args(["--preset_v1_4"])
+            args.dry_run = True
+            args.max_problems = 2
+            args.star_iterations = 1
+            args.problem_file = "dataset_cyber_ready.jsonl"
+            args.anchor_file = "dataset_cyber_ready.jsonl"
+            args.output_dir = temp_out
+
+            final_adapter = run_star_pipeline(args)
+            assert final_adapter is not None
+            assert os.path.exists(os.path.join(final_adapter, "adapter_config.json"))
+        finally:
+            shutil.rmtree(temp_out, ignore_errors=True)
+
+    def test_backbone_in_star_and_colab(self):
+        from scripts.train_colab import parse_args as parse_args_colab
+        args_star = parse_args(["--backbone", "qwen2.5-coder-7b"])
+        assert args_star.model_name_or_path == "Qwen/Qwen2.5-Coder-7B-Instruct"
+
+        sys_backup = sys.argv
+        try:
+            sys.argv = ["train_colab.py", "--backbone", "phi4-14b"]
+            args_colab = parse_args_colab()
+            assert args_colab.model_name_or_path == "microsoft/Phi-4"
+        finally:
+            sys.argv = sys_backup
+
+    def test_build_lora_config_star_dora(self):
+        from scripts.train_star import build_lora_config
+        lora_cfg = build_lora_config(r=64, lora_alpha=128, use_dora=True)
+        assert lora_cfg.r == 64
+        assert lora_cfg.lora_alpha == 128
+        assert getattr(lora_cfg, "use_dora", False) is True
+
+    def test_load_wmdp_cyber_prompts_from_file(self):
+        from scripts.train_star import load_wmdp_cyber_prompts
+        with tempfile.NamedTemporaryFile("w+", suffix=".jsonl", delete=False) as f:
+            f.write(json.dumps({
+                "question": "Which header mitigates clickjacking attacks?",
+                "choices": ["X-Frame-Options", "Content-Type", "Server", "Authorization"],
+                "answer": 0
+            }) + "\n")
+            temp_path = f.name
+        try:
+            prompts = load_wmdp_cyber_prompts(dataset_name_or_file=temp_path)
+            assert len(prompts) == 1
+            assert "X-Frame-Options" in prompts[0]["user_prompt"]
+            assert prompts[0]["metadata"]["expected_answer"] == "A"
+            assert prompts[0]["metadata"]["benchmark"] == "WMDP-Cyber"
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+
+
+

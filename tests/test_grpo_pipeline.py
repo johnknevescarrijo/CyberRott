@@ -37,6 +37,10 @@ from scripts.train_grpo import (
     filter_supported_kwargs,
     truncate_prompt,
     truncate_dataset_prompts,
+    prm_step_reward,
+    SUPPORTED_BACKBONES,
+    resolve_backbone_config,
+    build_lora_config,
 )
 
 
@@ -946,6 +950,83 @@ class TestGRPOConfigKwargsAndPromptTruncation:
         real_config = GRPOConfig(**filtered)
         assert real_config.learning_rate == 5e-6
         assert real_config.num_generations == 8
+
+
+class TestGRPOv14Upgrades:
+    """Valida as novidades arquiteturais v1.4: PRM reward, scaling de backbones, DoRA e full-scale."""
+
+    def test_prm_step_reward_scoring_and_penalties(self):
+        ideal_cot = (
+            "<think>\n"
+            "Step 1: Surface Enumeration shows the HTTP parameter is unvalidated.\n"
+            "Step 2: Taint analysis tracks the input directly into the query.\n"
+            "Step 3: Dangerous sink identified: cursor.execute.\n"
+            "Step 4: Therefore, CWE-89 SQL Injection is confirmed.\n"
+            "</think>\n"
+            "Resposta Final: [A]"
+        )
+        broken_cot = "No think tags at all."
+        contradict_cot = (
+            "<think>\n"
+            "Step 1: Surface analysis.\n"
+            "Step 2: Option A is the only correct answer.\n"
+            "</think>\n"
+            "Resposta Final: [B]"
+        )
+
+        rewards = prm_step_reward(["p"] * 3, [ideal_cot, broken_cot, contradict_cot], w_prm=0.25)
+        assert len(rewards) == 3
+        assert rewards[0] > 0.10, "Ideal candidate should receive high PRM reward"
+        assert rewards[1] == 0.0, "Missing think tags must receive 0 PRM reward"
+        assert rewards[2] == 0.0, "Contradiction between think and answer must receive 0 PRM reward"
+
+    def test_backbone_catalog_resolution(self):
+        assert "phi4-mini" in SUPPORTED_BACKBONES
+        assert "qwen2.5-coder-7b" in SUPPORTED_BACKBONES
+        assert "phi4-14b" in SUPPORTED_BACKBONES
+
+        qwen_cfg = resolve_backbone_config("qwen2.5-coder-7b")
+        assert qwen_cfg["model_id"] == "Qwen/Qwen2.5-Coder-7B-Instruct"
+        assert isinstance(qwen_cfg["target_modules"], list)
+
+        phi4_cfg = resolve_backbone_config("microsoft/Phi-4-mini-instruct")
+        assert phi4_cfg["model_id"] == "microsoft/Phi-4-mini-instruct"
+
+    def test_v14_preset_args_activation(self):
+        import sys
+        sys_argv_backup = sys.argv
+        try:
+            sys.argv = ["train_grpo.py", "--preset_v1_4"]
+            args = parse_args()
+            assert args.use_dora is True
+            assert args.lora_r == 64
+            assert args.lora_alpha == 128
+            assert args.max_completion_length == 2048
+            assert args.max_samples == 4680
+            assert args.include_prm is True
+        finally:
+            sys.argv = sys_argv_backup
+
+    def test_backbone_cli_args_override(self):
+        import sys
+        sys_argv_backup = sys.argv
+        try:
+            sys.argv = ["train_grpo.py", "--backbone", "qwen2.5-coder-7b"]
+            args = parse_args()
+            assert args.model_name_or_path == "Qwen/Qwen2.5-Coder-7B-Instruct"
+        finally:
+            sys.argv = sys_argv_backup
+
+    def test_build_lora_config_dora(self):
+        config_standard = build_lora_config(r=32, lora_alpha=64, use_dora=False)
+        assert config_standard.r == 32
+        assert config_standard.lora_alpha == 64
+
+        config_dora = build_lora_config(r=64, lora_alpha=128, use_dora=True)
+        assert config_dora.r == 64
+        assert config_dora.lora_alpha == 128
+        assert getattr(config_dora, "use_dora", False) is True
+
 
 
 

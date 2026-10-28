@@ -33,6 +33,39 @@ except Exception:
     pass
 
 from peft import PeftModel
+import json
+
+# Backbone Scaling Catalog (v1.4)
+SUPPORTED_BACKBONES = {
+    "phi4-mini": {
+        "model_id": "microsoft/Phi-4-mini-instruct",
+        "description": "Microsoft Phi-4-mini (3.82B) dense reasoning architecture",
+    },
+    "qwen2.5-coder-7b": {
+        "model_id": "Qwen/Qwen2.5-Coder-7B-Instruct",
+        "description": "Qwen 2.5 Coder 7B Instruct specialized in code audit & reversing",
+    },
+    "phi4-14b": {
+        "model_id": "microsoft/Phi-4",
+        "description": "Microsoft Phi-4 14B deep deductive reasoning model",
+    },
+}
+
+
+def resolve_backbone_config(backbone_or_model: str):
+    """Resolve a chave de backbone ou ID de modelo Hugging Face para a configuração canônica."""
+    if not backbone_or_model:
+        return SUPPORTED_BACKBONES["phi4-mini"]
+    key = backbone_or_model.lower().strip()
+    if key in SUPPORTED_BACKBONES:
+        return SUPPORTED_BACKBONES[key]
+    for b_key, b_cfg in SUPPORTED_BACKBONES.items():
+        if b_cfg["model_id"].lower() == key:
+            return b_cfg
+    return {
+        "model_id": backbone_or_model,
+        "description": f"Custom architecture: {backbone_or_model}",
+    }
 
 
 def resolve_adapter_path(path: str) -> str:
@@ -114,6 +147,16 @@ def merge_and_save(
         print("   [✓] SFT layer successfully merged into base model!")
 
     print(f"4. Merging final adapters from: {resolved_final}...")
+    cfg_path = os.path.join(resolved_final, "adapter_config.json")
+    if os.path.exists(cfg_path):
+        try:
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                adapter_cfg = json.load(f)
+                if adapter_cfg.get("use_dora", False):
+                    print("   [*] Weight-Decomposed Low-Rank Adaptation (DoRA) detected in adapter. Applying DoRA directional/magnitude merge.")
+        except Exception:
+            pass
+
     final_lora_model = PeftModel.from_pretrained(base_model, resolved_final)
     merged_model = final_lora_model.merge_and_unload()
     # Clean residual peft_config to guarantee clean Transformers base model export
@@ -141,11 +184,22 @@ def merge_and_save(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="LoRA Fusion Pipeline for Phi-4-mini CyberRott")
+    parser.add_argument(
+        "--backbone",
+        choices=["phi4-mini", "qwen2.5-coder-7b", "phi4-14b"],
+        default=None,
+        help="Pre-configured backbone architecture from SUPPORTED_BACKBONES."
+    )
     parser.add_argument("--base_model", default="microsoft/Phi-4-mini-instruct", help="Base model identifier or local path")
     parser.add_argument("--sft_adapter", default=None, help="Path to prior SFT adapter (optional for GRPO models)")
     parser.add_argument("--adapter", required=True, help="Directory containing trained LoRA adapters (GRPO or SFT)")
     parser.add_argument("--output", default="./CyberRott-v1.3-Standalone", help="Target directory for the merged standalone model")
     parser.add_argument("--torch_dtype", default="bfloat16", choices=["bfloat16", "float16", "float32"], help="Numerical precision for merged weights")
     args = parser.parse_args()
+
+    if args.backbone:
+        cfg = resolve_backbone_config(args.backbone)
+        if args.base_model == "microsoft/Phi-4-mini-instruct":
+            args.base_model = cfg["model_id"]
 
     merge_and_save(args.base_model, args.adapter, args.output, args.torch_dtype, args.sft_adapter)
