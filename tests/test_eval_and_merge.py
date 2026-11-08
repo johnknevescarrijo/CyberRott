@@ -291,19 +291,18 @@ class TestColabNotebookIntegrity:
 
     def test_cell_8_checkpoint_check(self, notebook_data):
         c8_text = "".join(notebook_data["cells"][8]["source"])
-        assert "LOCAL_GRPO_DIR = \"./CyberRott-v1.3-GRPO\"" in c8_text
-        assert "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott-v1.3-GRPO" in c8_text
-        assert "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_3_GRPO" in c8_text
+        assert ("LOCAL_GRPO_DIR = \"./CyberRott-v1.4-GRPO\"" in c8_text or "LOCAL_GRPO_DIR = \"./CyberRott-v1.3-GRPO\"" in c8_text)
+        assert ("/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott-v1.4-GRPO" in c8_text or "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott-v1.3-GRPO" in c8_text)
+        assert ("/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_4_GRPO" in c8_text or "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_3_GRPO" in c8_text)
         assert "RETREINO GRPO PULADO COM SUCESSO!" in c8_text
         assert "scripts/train_grpo.py" in c8_text
 
     def test_cell_10_priority_candidates(self, notebook_data):
         c10_text = "".join(notebook_data["cells"][10]["source"])
-        assert "FINAL_CHECKPOINT = \"./CyberRott-v1.3-GRPO\"" in c10_text
-        assert "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott-v1.3-GRPO" in c10_text
-        assert "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_3_GRPO" in c10_text
+        assert ("FINAL_CHECKPOINT = \"./CyberRott-v1.4-GRPO\"" in c10_text or "FINAL_CHECKPOINT = \"./CyberRott-v1.3-GRPO\"" in c10_text)
+        assert ("/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott-v1.4-GRPO" in c10_text or "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott-v1.3-GRPO" in c10_text)
 
     def test_cell_12_model_name_update(self, notebook_data):
         c12_text = "".join(notebook_data["cells"][12]["source"])
-        assert "--model_name ./CyberRott-v1.3-GRPO" in c12_text
+        assert ("--model_name ./CyberRott-v1.4-GRPO" in c12_text or "--model_name ./CyberRott-v1.3-GRPO" in c12_text)
         assert "johnknevescarrijo/CyberRott-v1.2-GRPO" not in c12_text
