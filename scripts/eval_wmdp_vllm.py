@@ -116,6 +116,12 @@ def resolve_model_or_adapter_path(model_name: str, sft_adapter: str = None, base
     # 1. Priority inspection for BF16 checkpoints and standalone models
     if "CyberRott" in model_name or "GRPO" in model_name or "cyberrott" in model_name.lower():
         bf16_priority_candidates = [
+            # v1.4
+            ("/content/CyberRott-v1.4-BF16-Standalone", True),
+            ("/content/CyberRott-v1.4-Standalone", True),
+            ("/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_4_GRPO", False),
+            ("/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott-v1.4-GRPO", False),
+            ("./CyberRott-v1.4-GRPO", False),
             # v1.3
             ("/content/CyberRott-v1.3-BF16-Standalone", True),
             ("/content/CyberRott-v1.3-Standalone", True),
@@ -196,6 +202,12 @@ def resolve_model_or_adapter_path(model_name: str, sft_adapter: str = None, base
             # 2. Check candidate locations if not resolved
             if not resolved_model:
                 model_candidates = [
+                    "/content/CyberRott-v1.4-BF16-Standalone",
+                    "/content/CyberRott-v1.4-Standalone",
+                    "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_4_GRPO",
+                    "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott-v1.4-GRPO",
+                    "/content/CyberRott/CyberRott-v1.4-GRPO",
+                    "./CyberRott-v1.4-GRPO",
                     "/content/CyberRott-v1.3-BF16-Standalone",
                     "/content/CyberRott-v1.3-Standalone",
                     "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_3_GRPO",
@@ -247,7 +259,11 @@ def resolve_model_or_adapter_path(model_name: str, sft_adapter: str = None, base
     # 3. Automatic resolution of SFT adapter
     resolved_sft = None
     sft_candidates = [
-        sft_adapter if (sft_adapter and sft_adapter != "./cyberrott_v1_1_sft_lora") else None,
+        sft_adapter if (sft_adapter and sft_adapter not in ["./cyberrott_v1_1_sft_lora", "./CyberRott-v1.4-SFT-DoRA"]) else None,
+        "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott-v1.4-SFT-DoRA",
+        "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_4_SFT_DoRA",
+        "./CyberRott-v1.4-SFT-DoRA",
+        "/content/CyberRott/CyberRott-v1.4-SFT-DoRA",
         "/content/drive/MyDrive/CyberRott_Checkpoints/cyberrott_v1_1_sft_lora",
         "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_1_Final",
         sft_adapter,
@@ -632,12 +648,17 @@ def main():
         is_adapter = os.path.exists(os.path.join(model_to_load, "adapter_config.json"))
         has_config = os.path.exists(os.path.join(model_to_load, "config.json"))
         if is_adapter and not has_config:
-            version_str = "v1.3" if any(v in model_to_load.lower() or v in args.model_name.lower() for v in ["v1_3", "v1.3", "1.3"]) else "v1.2"
+            if any(v in model_to_load.lower() or v in args.model_name.lower() for v in ["v1_4", "v1.4", "1.4"]):
+                version_str = "v1.4"
+            elif any(v in model_to_load.lower() or v in args.model_name.lower() for v in ["v1_3", "v1.3", "1.3"]):
+                version_str = "v1.3"
+            else:
+                version_str = "v1.2"
             base_dir = "/content" if os.path.exists("/content") else "."
             standalone_target = os.path.abspath(os.path.join(base_dir, f"CyberRott-{version_str}-BF16-Standalone"))
 
             legacy_target = os.path.abspath(os.path.join(base_dir, "CyberRott-v1.2-BF16-Standalone"))
-            if version_str == "v1.3" and not os.path.exists(os.path.join(standalone_target, "config.json")):
+            if version_str in ["v1.3", "v1.4"] and not os.path.exists(os.path.join(standalone_target, "config.json")):
                 if os.path.exists(os.path.join(legacy_target, "config.json")):
                     print(f"[*] Detected merged model from prior run at '{legacy_target}'.")
                     print(f"[*] Moving/Renaming to target '{standalone_target}'...")
@@ -1032,7 +1053,12 @@ def main():
         or (not model_to_load.endswith(".gguf") and "safetensors_v2" not in model_to_load and ("CyberRott" in args.model_name or "CyberRott" in model_to_load))
     )
 
-    detected_version = "v1.3" if any(v in model_to_load.lower() or v in args.model_name.lower() for v in ["v1_3", "v1.3", "1.3"]) else "v1.2"
+    if any(v in model_to_load.lower() or v in args.model_name.lower() for v in ["v1_4", "v1.4", "1.4"]):
+        detected_version = "v1.4"
+    elif any(v in model_to_load.lower() or v in args.model_name.lower() for v in ["v1_3", "v1.3", "1.3"]):
+        detected_version = "v1.3"
+    else:
+        detected_version = "v1.2"
 
     if is_bf16_standalone:
         sanitized_name = f"CyberRott-{detected_version.replace('.', '_')}-GRPO-BF16"

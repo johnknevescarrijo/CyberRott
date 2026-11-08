@@ -1721,6 +1721,16 @@ def parse_args():
         parsed.max_completion_length = 2048
         parsed.max_samples = 4680
         parsed.include_prm = True
+        if parsed.adapter_name_or_path == "./cyberrott_v1_1_sft_lora":
+            for cand in [
+                "./CyberRott-v1.4-SFT-DoRA",
+                "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott-v1.4-SFT-DoRA",
+                "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_4_SFT_DoRA",
+                "/content/CyberRott/CyberRott-v1.4-SFT-DoRA",
+            ]:
+                if os.path.exists(cand) and os.path.exists(os.path.join(cand, "adapter_config.json")):
+                    parsed.adapter_name_or_path = cand
+                    break
 
     if parsed.full_scale:
         parsed.max_samples = 4680
@@ -1791,6 +1801,17 @@ def main():
 
     # 7. In-Memory Fusion: SFT LoRA -> Base Model (Policy π_ref with 0 extra VRAM)
     adapter_path = args.adapter_name_or_path
+    if adapter_path and not (os.path.exists(adapter_path) and os.path.exists(os.path.join(adapter_path, "adapter_config.json"))):
+        basename = os.path.basename(adapter_path.rstrip("/"))
+        for candidate in [
+            os.path.join("/content/drive/MyDrive/CyberRott_Checkpoints", basename),
+            os.path.join("/content", basename),
+            os.path.join("/content/CyberRott", basename),
+        ]:
+            if os.path.exists(candidate) and os.path.exists(os.path.join(candidate, "adapter_config.json")):
+                adapter_path = candidate
+                break
+
     if adapter_path and os.path.exists(adapter_path) and os.path.exists(os.path.join(adapter_path, "adapter_config.json")):
         print(f"\n[*] Prior SFT checkpoint detected at: '{adapter_path}'")
         print("[*] Merging LoRA weights in memory (merge_and_unload)...")

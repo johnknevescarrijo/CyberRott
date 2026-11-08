@@ -80,6 +80,12 @@ def resolve_adapter_path(path: str) -> str:
                 return root
     # Common default candidates in Google Colab / local workspaces
     candidates = [
+        "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott-v1.4-GRPO",
+        "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_4_GRPO",
+        "./CyberRott-v1.4-GRPO",
+        "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott-v1.4-SFT-DoRA",
+        "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_4_SFT_DoRA",
+        "./CyberRott-v1.4-SFT-DoRA",
         "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott-v1.3-GRPO",
         "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_3_GRPO",
         "./CyberRott-v1.3-GRPO",
@@ -193,7 +199,7 @@ if __name__ == "__main__":
     parser.add_argument("--base_model", default="microsoft/Phi-4-mini-instruct", help="Base model identifier or local path")
     parser.add_argument("--sft_adapter", default=None, help="Path to prior SFT adapter (optional for GRPO models)")
     parser.add_argument("--adapter", required=True, help="Directory containing trained LoRA adapters (GRPO or SFT)")
-    parser.add_argument("--output", default="./CyberRott-v1.3-Standalone", help="Target directory for the merged standalone model")
+    parser.add_argument("--output", default="./CyberRott-v1.4-Standalone", help="Target directory for the merged standalone model")
     parser.add_argument("--torch_dtype", default="bfloat16", choices=["bfloat16", "float16", "float32"], help="Numerical precision for merged weights")
     args = parser.parse_args()
 

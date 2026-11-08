@@ -59,7 +59,7 @@ def export_pipeline(
     quant_type: str,
     output_dir: str,
     torch_dtype: str = "bfloat16",
-    ollama_model_name: str = "cyberrott-v1.3",
+    ollama_model_name: str = "cyberrott-v1.4",
     skip_merge: bool = False,
     standalone_path: str = None,
 ):
@@ -67,7 +67,7 @@ def export_pipeline(
     mode_desc = "Pure Unquantized F16 (Full 16-bit Precision)" if is_f16 else f"{quant_type} Quantization"
 
     print("=" * 70)
-    print(f"🛡️  CyberRott v1.3 — GGUF Export Pipeline ({mode_desc})")
+    print(f"🛡️  CyberRott v1.4 — GGUF Export Pipeline ({mode_desc})")
     print("=" * 70)
     print(f"Base Model:       {base_model}")
     print(f"SFT Adapter:      {sft_adapter or 'None'}")
@@ -77,9 +77,9 @@ def export_pipeline(
     print("=" * 70)
 
     os.makedirs(output_dir, exist_ok=True)
-    standalone_dir = standalone_path or os.path.join(output_dir, "CyberRott-v1.3-Standalone")
-    f16_gguf_path = os.path.join(output_dir, "cyberrott-v1.3-f16.gguf")
-    quant_gguf_path = os.path.join(output_dir, f"cyberrott-v1.3-{quant_type.lower()}.gguf")
+    standalone_dir = standalone_path or os.path.join(output_dir, "CyberRott-v1.4-Standalone")
+    f16_gguf_path = os.path.join(output_dir, "cyberrott-v1.4-f16.gguf")
+    quant_gguf_path = os.path.join(output_dir, f"cyberrott-v1.4-{quant_type.lower()}.gguf")
     modelfile_path = os.path.join(output_dir, "Modelfile")
     llama_cpp_dir = os.path.join(output_dir, "llama.cpp")
 
@@ -234,7 +234,7 @@ def parse_args():
         "--grpo_adapter", "--adapter",
         dest="grpo_adapter",
         type=str,
-        default="./CyberRott-v1.2-GRPO",
+        default="./CyberRott-v1.4-GRPO",
         help="Path to the LoRA adapter trained with GRPO in Phase 3."
     )
     parser.add_argument(
@@ -247,7 +247,7 @@ def parse_args():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="./CyberRott-v1.3-Export",
+        default="./CyberRott-v1.4-Export",
         help="Output directory where standalone model, GGUFs, and Modelfile will be stored."
     )
     parser.add_argument(
@@ -260,8 +260,8 @@ def parse_args():
     parser.add_argument(
         "--ollama_model_name",
         type=str,
-        default="cyberrott-v1.3",
-        help="Model name to register for the 'ollama run' command (default: cyberrott-v1.3)."
+        default="cyberrott-v1.4",
+        help="Model name to register for the 'ollama run' command (default: cyberrott-v1.4)."
     )
     parser.add_argument(
         "--skip_merge",
@@ -283,15 +283,24 @@ if __name__ == "__main__":
     # Normalize sft_adapter path if non-existent
     sft_path = args.sft_adapter
     if sft_path and not os.path.exists(sft_path):
-        drive_candidate = "/content/drive/MyDrive/CyberRott_Checkpoints/cyberrott_v1_1_sft_lora"
-        if os.path.exists(drive_candidate):
-            sft_path = drive_candidate
+        for drive_candidate in [
+            "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott-v1.4-SFT-DoRA",
+            "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_4_SFT_DoRA",
+            "./CyberRott-v1.4-SFT-DoRA",
+            "/content/drive/MyDrive/CyberRott_Checkpoints/cyberrott_v1_1_sft_lora",
+        ]:
+            if os.path.exists(drive_candidate):
+                sft_path = drive_candidate
+                break
         else:
             sft_path = None
 
     grpo_path = args.grpo_adapter
     if not os.path.exists(grpo_path):
         for candidate in [
+            "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_4_GRPO",
+            "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott-v1.4-GRPO",
+            "./CyberRott-v1.4-GRPO",
             "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_3_GRPO",
             "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott-v1.3-GRPO",
             "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_2_GRPO",

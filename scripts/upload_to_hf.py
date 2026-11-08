@@ -17,9 +17,12 @@ import argparse
 from typing import Optional, List
 from huggingface_hub import HfApi, create_repo, get_token
 
-DEFAULT_REPO_NAME = "CyberRott-v1.3-GRPO"
+DEFAULT_REPO_NAME = "CyberRott-v1.4-GRPO"
 
 CANDIDATE_FOLDERS: List[str] = [
+    "/content/CyberRott-v1.4-BF16-Standalone",
+    "./CyberRott-v1.4-Standalone",
+    "./CyberRott-v1.4-BF16-Standalone",
     "/content/CyberRott-v1.3-BF16-Standalone",
     "./CyberRott-v1.3-Standalone",
     "./CyberRott-v1.3-BF16-Standalone",
@@ -29,6 +32,8 @@ CANDIDATE_FOLDERS: List[str] = [
 ]
 
 CANDIDATE_GGUFS: List[str] = [
+    "./CyberRott-v1.4-GRPO.gguf",
+    "/content/CyberRott-v1.4-GRPO.gguf",
     "./CyberRott-v1.3-GRPO.gguf",
     "/content/CyberRott-v1.3-GRPO.gguf",
     "./CyberRott-v1.2-mini.gguf",
@@ -37,6 +42,7 @@ CANDIDATE_GGUFS: List[str] = [
 ]
 
 CANDIDATE_MODELFILES: List[str] = [
+    "./Modelfile_v1.4",
     "./Modelfile_v1.3",
     "./Modelfile_v1.2",
     "./Modelfile"
