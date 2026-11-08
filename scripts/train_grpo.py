@@ -23,6 +23,7 @@ import re
 import json
 import time
 import shutil
+import subprocess
 import urllib.request
 import argparse
 import inspect
@@ -1189,6 +1190,56 @@ def probe_vllm_server(
     return False
 
 
+def ensure_vllm_server(
+    model_name_or_path: str = "microsoft/Phi-4-mini-instruct",
+    host: str = "127.0.0.1",
+    port: int = 8000,
+    gpu_mem_util: float = 0.30,
+    dtype: str = "bfloat16",
+    max_wait_seconds: int = 75,
+) -> bool:
+    """Ensures a vLLM server is active on host:port, launching trl.scripts.vllm_serve if offline."""
+    if probe_vllm_server(host=host, port=port, timeout=2.0):
+        print(f"[✓] Servidor vLLM ativo detectado em {host}:{port}.")
+        return True
+
+    print(f"[*] Servidor vLLM offline em {host}:{port}. Inicializando 'python -m trl.scripts.vllm_serve'...")
+    cmd = [
+        sys.executable,
+        "-m",
+        "trl.scripts.vllm_serve",
+        "--model",
+        model_name_or_path,
+        "--host",
+        host,
+        "--port",
+        str(port),
+        "--gpu_memory_utilization",
+        str(gpu_mem_util),
+        "--dtype",
+        dtype,
+    ]
+    try:
+        log_file = open("vllm_server.log", "w", encoding="utf-8")
+        proc = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT)
+    except Exception as exc:
+        print(f"[!] Falha ao iniciar processo em background do servidor vLLM: {exc}")
+        return False
+
+    start_time = time.time()
+    while time.time() - start_time < max_wait_seconds:
+        if probe_vllm_server(host=host, port=port, timeout=1.0):
+            print(f"[✓] Servidor vLLM inicializado e respondendo com sucesso em {host}:{port}! (PID: {proc.pid})")
+            return True
+        if proc.poll() is not None:
+            print(f"[!] Servidor vLLM encerrou inesperadamente com código {proc.returncode}. Verifique vllm_server.log.")
+            return False
+        time.sleep(2.0)
+
+    print(f"[!] Timeout ({max_wait_seconds}s) aguardando inicialização do servidor vLLM em {host}:{port}.")
+    return False
+
+
 def resolve_vllm_kwargs(
     config_cls: Any,
     use_vllm: bool = False,
@@ -1719,7 +1770,8 @@ def parse_args():
         parsed.lora_r = 64
         parsed.lora_alpha = 128
         parsed.max_completion_length = 2048
-        parsed.max_samples = 4680
+        if parsed.max_samples == 800:
+            parsed.max_samples = 4680
         parsed.include_prm = True
         if parsed.adapter_name_or_path == "./cyberrott_v1_1_sft_lora":
             for cand in [
@@ -1908,6 +1960,18 @@ def main():
             use_vllm = False
         else:
             print("[✓] 'vllm' package detected in Python environment.")
+            sig_params = inspect.signature(GRPOConfig.__init__).parameters
+            if ("vllm_server_host" in sig_params or "vllm_server_port" in sig_params) and "vllm_mode" not in sig_params:
+                server_host = getattr(args, "vllm_server_host", "127.0.0.1")
+                server_port = getattr(args, "vllm_server_port", 8000)
+                if not probe_vllm_server(host=server_host, port=server_port, timeout=2.0):
+                    ensure_vllm_server(
+                        model_name_or_path=args.model_name_or_path,
+                        host=server_host,
+                        port=server_port,
+                        gpu_mem_util=args.vllm_gpu_memory_utilization,
+                        dtype="bfloat16" if args.torch_dtype == "bfloat16" else "auto",
+                    )
 
     vllm_kwargs = resolve_vllm_kwargs(
         config_cls=GRPOConfig,
