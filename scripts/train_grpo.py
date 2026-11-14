@@ -17,6 +17,7 @@ Implements the DeepSeek-R1 style online reinforcement learning engine:
 import os
 # Early configuration of CUDA memory allocator to mitigate VRAM fragmentation (expandable_segments)
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
 import sys
 import gc
 import re
@@ -186,6 +187,7 @@ import torch
 
 # Disable Weights & Biases by default and configure CUDA memory allocator
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 os.environ["WANDB_DISABLED"] = "true"
 
 # Add repository root directory to Python path for local imports
@@ -470,11 +472,274 @@ def enable_fast_generation_with_kv_cache(model: Any) -> Any:
 enable_fast_generation_with_kv_cache._active_generation = False
 
 
+DEFAULT_DRIVE_MOUNT = "/content/drive/MyDrive"
+DEFAULT_DRIVE_CHECKPOINTS_DIR = "/content/drive/MyDrive/CyberRott_Checkpoints"
+ADAPTER_WEIGHT_FILES = ("adapter_model.safetensors", "adapter_model.bin")
+HEAVY_TRAINING_STATE_PREFIXES = (
+    "optimizer",
+    "scheduler",
+    "rng_state",
+    "scaler",
+    "zero_to_fp32",
+    "global_step",
+)
+CHECKPOINT_ARTIFACT_HINT_FILES = (
+    "trainer_state.json",
+    "adapter_config.json",
+    "adapter_model.safetensors",
+    "adapter_model.bin",
+    "optimizer.pt",
+    "pytorch_model.bin",
+    "model.safetensors",
+)
+_SCRATCH_RESUME_VALUES = {"none", "false", "no", "scratch", ""}
+
+try:
+    from transformers import TrainerCallback as _HFTrainerCallback
+except Exception:  # pragma: no cover - fallback when transformers unavailable
+    class _HFTrainerCallback:
+        pass
+
+
+def has_complete_adapter(directory: str) -> bool:
+    """Return True if directory contains adapter_config.json and adapter weights."""
+    if not directory or not os.path.isdir(directory):
+        return False
+    if not os.path.isfile(os.path.join(directory, "adapter_config.json")):
+        return False
+    return any(os.path.isfile(os.path.join(directory, fname)) for fname in ADAPTER_WEIGHT_FILES)
+
+
+def list_checkpoints(directory: str) -> List[Tuple[int, str]]:
+    """Return numerically sorted (step, path) pairs for checkpoint-<step> subdirs."""
+    if not directory or not os.path.isdir(directory):
+        return []
+    checkpoints: List[Tuple[int, str]] = []
+    for entry in os.listdir(directory):
+        match = re.fullmatch(r"checkpoint-(\d+)", entry)
+        if not match:
+            continue
+        full_path = os.path.join(directory, entry)
+        if os.path.isdir(full_path):
+            checkpoints.append((int(match.group(1)), full_path))
+    checkpoints.sort(key=lambda item: item[0])
+    return checkpoints
+
+
+def read_trainer_state(checkpoint_dir: str) -> Optional[Dict[str, Any]]:
+    """Read trainer_state.json from checkpoint_dir, returning None if absent or invalid."""
+    state_path = os.path.join(checkpoint_dir, "trainer_state.json")
+    if not os.path.isfile(state_path):
+        return None
+    try:
+        with open(state_path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def is_checkpoint_completed(
+    checkpoint_dir: str,
+    num_train_epochs: float,
+    max_steps: Optional[int] = None,
+) -> bool:
+    """Return True when checkpoint has complete adapter files and finished training state."""
+    if not has_complete_adapter(checkpoint_dir):
+        return False
+    state = read_trainer_state(checkpoint_dir)
+    if state is None:
+        return False
+
+    state_epoch = state.get("epoch")
+    state_step = state.get("global_step")
+    state_max_steps = state.get("max_steps")
+    state_num_epochs = state.get("num_train_epochs")
+
+    if max_steps is not None and int(max_steps) > 0 and state_step is not None:
+        if int(state_step) >= int(max_steps):
+            return True
+
+    if state_epoch is not None and num_train_epochs is not None and float(num_train_epochs) > 0:
+        if float(state_epoch) >= float(num_train_epochs) - 1e-3:
+            return True
+
+    if state_max_steps is not None and int(state_max_steps) > 0 and state_step is not None:
+        if int(state_step) >= int(state_max_steps):
+            if (
+                state_num_epochs is None
+                or num_train_epochs is None
+                or float(state_num_epochs) >= float(num_train_epochs) - 1e-3
+            ):
+                return True
+
+    return False
+
+
+def _is_resumable_checkpoint_dir(checkpoint_dir: str) -> bool:
+    """Return True if checkpoint_dir contains at least one recognized HF checkpoint artifact."""
+    return any(
+        os.path.isfile(os.path.join(checkpoint_dir, fname))
+        for fname in CHECKPOINT_ARTIFACT_HINT_FILES
+    )
+
+
+def _get_drive_subfolder_variants(output_dir: str, fallback_name: str = "CyberRott-v1.3-GRPO") -> Tuple[str, List[str]]:
+    """Build canonical subfolder name and '-' / '_' / '.' variants for Drive lookup."""
+    base = os.path.basename(os.path.normpath(output_dir)) if output_dir else ""
+    target_subfolder = base if base and base not in (".", "/") else fallback_name
+    raw_variants = [
+        target_subfolder,
+        target_subfolder.replace("-", "_"),
+        target_subfolder.replace("-", "_").replace(".", "_"),
+        target_subfolder.replace("_", "-"),
+    ]
+    variants: List[str] = []
+    for name in raw_variants:
+        if name and name not in variants:
+            variants.append(name)
+    return target_subfolder, variants
+
+
+def resolve_drive_paths(
+    output_dir: str,
+    drive_dir: Optional[str] = None,
+    drive_mount: str = DEFAULT_DRIVE_MOUNT,
+) -> Dict[str, Any]:
+    """Resolve Google Drive root, target mirror directory, and existing candidate dirs."""
+    target_subfolder, variants = _get_drive_subfolder_variants(output_dir)
+    drive_root: Optional[str] = None
+    drive_target_dir: Optional[str] = None
+    candidate_dirs: List[str] = []
+
+    if drive_dir:
+        norm_drive = os.path.normpath(drive_dir)
+        drive_base = os.path.basename(norm_drive)
+        looks_like_run_dir = (
+            drive_base in variants
+            or has_complete_adapter(norm_drive)
+            or len(list_checkpoints(norm_drive)) > 0
+        )
+        if looks_like_run_dir:
+            drive_target_dir = norm_drive
+            drive_root = os.path.dirname(norm_drive) or None
+            candidate_dirs.append(norm_drive)
+            if drive_root and os.path.isdir(drive_root):
+                for variant in variants:
+                    candidate_dirs.append(os.path.join(drive_root, variant))
+        else:
+            drive_root = norm_drive
+            drive_target_dir = os.path.join(drive_root, target_subfolder)
+            for variant in variants:
+                candidate_dirs.append(os.path.join(drive_root, variant))
+    elif os.path.exists(drive_mount):
+        drive_root = os.path.join(drive_mount, "CyberRott_Checkpoints")
+        drive_target_dir = os.path.join(drive_root, target_subfolder)
+        for variant in variants:
+            candidate_dirs.append(os.path.join(drive_root, variant))
+
+    existing_candidates: List[str] = []
+    seen_realpaths = set()
+    for path in candidate_dirs:
+        if os.path.isdir(path):
+            real = os.path.realpath(path)
+            if real not in seen_realpaths:
+                seen_realpaths.add(real)
+                existing_candidates.append(path)
+
+    return {
+        "target_subfolder": target_subfolder,
+        "variants": variants,
+        "drive_root": drive_root,
+        "drive_target_dir": drive_target_dir,
+        "candidate_drive_dirs": existing_candidates,
+    }
+
+
+def promote_adapter_files(src_dir: str, dst_dir: str) -> List[str]:
+    """Copy adapter/tokenizer/config files from src_dir to dst_dir, skipping heavy training state."""
+    if not os.path.isdir(src_dir):
+        return []
+    os.makedirs(dst_dir, exist_ok=True)
+    copied: List[str] = []
+    for entry in sorted(os.listdir(src_dir)):
+        src_path = os.path.join(src_dir, entry)
+        if not os.path.isfile(src_path):
+            continue
+        lower_name = entry.lower()
+        if any(lower_name.startswith(prefix) for prefix in HEAVY_TRAINING_STATE_PREFIXES):
+            continue
+        dst_path = os.path.join(dst_dir, entry)
+        if os.path.abspath(src_path) != os.path.abspath(dst_path):
+            shutil.copy2(src_path, dst_path)
+            copied.append(entry)
+    return copied
+
+
+def resolve_sft_adapter_path(
+    adapter_name_or_path: Optional[str],
+    drive_dir: Optional[str] = None,
+    drive_mount: str = DEFAULT_DRIVE_MOUNT,
+    local_promote_dir: Optional[str] = None,
+    promote: bool = True,
+) -> Optional[str]:
+    """Resolve Phase 2 SFT adapter locally or in Drive, promoting latest checkpoint-* if root lacks adapter_config.json."""
+    if not adapter_name_or_path:
+        return adapter_name_or_path
+
+    _, variants = _get_drive_subfolder_variants(adapter_name_or_path, fallback_name="CyberRott-v1.4-SFT-DoRA")
+    candidates: List[str] = [adapter_name_or_path]
+
+    search_roots: List[str] = []
+    if drive_dir:
+        search_roots.append(drive_dir)
+    if os.path.exists(drive_mount):
+        search_roots.append(os.path.join(drive_mount, "CyberRott_Checkpoints"))
+    search_roots.extend(["/content", "/content/CyberRott"])
+
+    for root in search_roots:
+        for variant in variants:
+            cand = os.path.join(root, variant)
+            if cand not in candidates:
+                candidates.append(cand)
+
+    # Pass 1: root adapter_config.json (preferring complete adapter with weights)
+    for cand in candidates:
+        if has_complete_adapter(cand):
+            return cand
+    for cand in candidates:
+        if os.path.isfile(os.path.join(cand, "adapter_config.json")):
+            return cand
+
+    # Pass 2: check checkpoint-* subdirectories inside candidates (select highest step)
+    best_ckpt: Optional[Tuple[int, str]] = None
+    for cand in candidates:
+        for step, ckpt_path in reversed(list_checkpoints(cand)):
+            if os.path.isfile(os.path.join(ckpt_path, "adapter_config.json")):
+                if best_ckpt is None or step > best_ckpt[0]:
+                    best_ckpt = (step, ckpt_path)
+                break
+
+    if best_ckpt is not None:
+        step, ckpt_path = best_ckpt
+        target_root = local_promote_dir or adapter_name_or_path
+        if promote and target_root:
+            promote_adapter_files(ckpt_path, target_root)
+            print(
+                f"[✓] SFT checkpoint-{step} detected at '{ckpt_path}' without root adapter_config.json; "
+                f"promoted adapter files to '{target_root}'."
+            )
+            return target_root
+        return ckpt_path
+
+    return adapter_name_or_path
+
+
 def resolve_resume_checkpoint(resume_arg: Optional[str], output_dir: str) -> Optional[str]:
     """Resolves checkpoint path for resuming GRPO training.
 
     Args:
-        resume_arg: Explicit checkpoint path or 'auto' for automatic detection.
+        resume_arg: Explicit checkpoint path, 'auto' for automatic detection, or 'none'/'false'.
         output_dir: Directory where 'checkpoint-*' checkpoints are saved.
 
     Returns:
@@ -484,24 +749,20 @@ def resolve_resume_checkpoint(resume_arg: Optional[str], output_dir: str) -> Opt
         return None
 
     cleaned_arg = str(resume_arg).strip()
-    if cleaned_arg.lower() == "auto":
+    lowered = cleaned_arg.lower()
+    if lowered in _SCRATCH_RESUME_VALUES:
+        return None
+
+    if lowered == "auto":
         if not os.path.isdir(output_dir):
             print(f"[*] 'auto' detection: Directory '{output_dir}' does not exist yet. Starting training from scratch.")
             return None
 
-        candidates = []
-        for entry in os.listdir(output_dir):
-            full_path = os.path.join(output_dir, entry)
-            if os.path.isdir(full_path) and entry.startswith("checkpoint-"):
-                match = re.search(r"checkpoint-(\d+)", entry)
-                if match:
-                    candidates.append((int(match.group(1)), full_path))
-
+        candidates = list_checkpoints(output_dir)
         if not candidates:
             print(f"[*] 'auto' detection: No checkpoints found in '{output_dir}'. Starting training from scratch.")
             return None
 
-        candidates.sort(key=lambda x: x[0])
         latest_checkpoint = candidates[-1][1]
         step_num = candidates[-1][0]
         print(f"[✓] 'auto' detection: Automatically resuming from latest checkpoint: {latest_checkpoint} (Step {step_num})")
@@ -518,45 +779,50 @@ def resolve_resume_checkpoint(resume_arg: Optional[str], output_dir: str) -> Opt
 def sync_checkpoint_to_google_drive(
     source_dir: str,
     target_subfolder: Optional[str] = None,
-    drive_mount: str = "/content/drive/MyDrive"
+    drive_mount: str = DEFAULT_DRIVE_MOUNT,
+    drive_dir: Optional[str] = None,
+    include_checkpoints: bool = True,
 ) -> Optional[str]:
     """Checks whether Google Drive is mounted in Colab and synchronizes the final checkpoint.
 
     Ensures the trained checkpoint is safely persisted in Google Drive even if the notebook
     runtime terminates prematurely.
-
-    Args:
-        source_dir: Local path of final checkpoint (e.g. args.output_dir).
-        target_subfolder: Destination subfolder (default: base name of source_dir or 'CyberRott-v1.3-GRPO').
-        drive_mount: Default mount point for Google Drive in Colab.
-
-    Returns:
-        Destination directory path in Google Drive, or None if Drive is not mounted.
     """
-    if not os.path.exists(drive_mount):
+    if not drive_dir and not os.path.exists(drive_mount):
         return None
 
     if not os.path.exists(source_dir):
         print(f"[!] Source directory '{source_dir}' not found for Google Drive sync.")
         return None
 
-    if not target_subfolder:
-        base = os.path.basename(os.path.normpath(source_dir))
-        target_subfolder = base if base and base not in (".", "/") else "CyberRott-v1.3-GRPO"
+    if drive_dir:
+        drive_info = resolve_drive_paths(source_dir, drive_dir=drive_dir, drive_mount=drive_mount)
+        drive_target_dir = drive_info["drive_target_dir"]
+        drive_checkpoints_dir = drive_info["drive_root"] or os.path.dirname(os.path.normpath(drive_target_dir))
+        if target_subfolder and drive_checkpoints_dir:
+            drive_target_dir = os.path.join(drive_checkpoints_dir, target_subfolder)
+        resolved_subfolder = os.path.basename(os.path.normpath(drive_target_dir))
+    else:
+        if not target_subfolder:
+            base = os.path.basename(os.path.normpath(source_dir))
+            target_subfolder = base if base and base not in (".", "/") else "CyberRott-v1.3-GRPO"
+        resolved_subfolder = target_subfolder
+        drive_checkpoints_dir = os.path.join(drive_mount, "CyberRott_Checkpoints")
+        drive_target_dir = os.path.join(drive_checkpoints_dir, target_subfolder)
 
-    drive_checkpoints_dir = os.path.join(drive_mount, "CyberRott_Checkpoints")
-    drive_target_dir = os.path.join(drive_checkpoints_dir, target_subfolder)
-
-    print(f"\n[*] Google Drive detected at '{drive_mount}'.")
-    print(f"[*] Automatically synchronizing final checkpoint: '{source_dir}' -> '{drive_target_dir}'...")
+    print(f"\n[*] Google Drive sync target: '{drive_target_dir}'.")
+    print(f"[*] Automatically synchronizing checkpoint: '{source_dir}' -> '{drive_target_dir}'...")
     try:
         os.makedirs(drive_checkpoints_dir, exist_ok=True)
-        shutil.copytree(source_dir, drive_target_dir, dirs_exist_ok=True)
+        if include_checkpoints:
+            shutil.copytree(source_dir, drive_target_dir, dirs_exist_ok=True)
+        else:
+            promote_adapter_files(source_dir, drive_target_dir)
         print(f"[✓] Checkpoint successfully saved and synced to Google Drive: '{drive_target_dir}'!")
 
         for alt_candidate in {
-            target_subfolder.replace("-", "_"),
-            target_subfolder.replace("-", "_").replace(".", "_"),
+            resolved_subfolder.replace("-", "_"),
+            resolved_subfolder.replace("-", "_").replace(".", "_"),
         }:
             drive_target_alt = os.path.join(drive_checkpoints_dir, alt_candidate)
             if drive_target_alt != drive_target_dir and not os.path.exists(drive_target_alt):
@@ -569,6 +835,281 @@ def sync_checkpoint_to_google_drive(
     except Exception as e:
         print(f"[!] Warning: Failed to sync checkpoint to Google Drive ({drive_target_dir}): {e}")
         return None
+
+
+def inspect_grpo_checkpoint_state(
+    output_dir: str,
+    resume_from_checkpoint: Optional[str] = "auto",
+    num_train_epochs: float = 1,
+    max_steps: Optional[int] = None,
+    drive_dir: Optional[str] = None,
+    drive_mount: str = DEFAULT_DRIVE_MOUNT,
+) -> Dict[str, Any]:
+    """Inspect local and Google Drive directories for GRPO completion or resume state."""
+    drive_info = resolve_drive_paths(output_dir, drive_dir=drive_dir, drive_mount=drive_mount)
+    drive_target_dir = drive_info["drive_target_dir"]
+    candidate_drive_dirs = drive_info["candidate_drive_dirs"]
+
+    local_checkpoints = list_checkpoints(output_dir)
+    drive_checkpoints: List[Tuple[int, str]] = []
+    for d_dir in candidate_drive_dirs:
+        drive_checkpoints.extend(list_checkpoints(d_dir))
+    drive_checkpoints.sort(key=lambda item: item[0])
+
+    result: Dict[str, Any] = {
+        "status": "scratch",
+        "resume_checkpoint": None,
+        "source_checkpoint": None,
+        "completed_source": None,
+        "completed_in_checkpoint": False,
+        "needs_sync_from_drive": False,
+        "local_checkpoints": local_checkpoints,
+        "drive_checkpoints": drive_checkpoints,
+        "drive_target_dir": drive_target_dir,
+        "candidate_drive_dirs": candidate_drive_dirs,
+    }
+
+    cleaned = "auto" if resume_from_checkpoint is None else str(resume_from_checkpoint).strip()
+    lowered = cleaned.lower()
+    if lowered in _SCRATCH_RESUME_VALUES:
+        return result
+
+    if lowered != "auto":
+        explicit_path = cleaned
+        if not os.path.exists(explicit_path):
+            for base_dir in [output_dir, *candidate_drive_dirs]:
+                cand = os.path.join(base_dir, explicit_path)
+                if os.path.exists(cand):
+                    explicit_path = cand
+                    break
+        if os.path.exists(explicit_path):
+            from_drive = any(
+                os.path.commonpath([os.path.abspath(explicit_path), os.path.abspath(d_dir)]) == os.path.abspath(d_dir)
+                for d_dir in candidate_drive_dirs
+            )
+            local_dest = (
+                os.path.join(output_dir, os.path.basename(os.path.normpath(explicit_path)))
+                if from_drive
+                else explicit_path
+            )
+            result.update(
+                {
+                    "status": "resume",
+                    "resume_checkpoint": local_dest,
+                    "source_checkpoint": explicit_path,
+                    "needs_sync_from_drive": from_drive and os.path.abspath(explicit_path) != os.path.abspath(local_dest),
+                }
+            )
+        return result
+
+    # 1. Check root completion locally or on Google Drive
+    if has_complete_adapter(output_dir):
+        result.update({"status": "completed", "completed_source": output_dir})
+        return result
+
+    for d_dir in candidate_drive_dirs:
+        if has_complete_adapter(d_dir):
+            result.update(
+                {
+                    "status": "completed",
+                    "completed_source": d_dir,
+                    "needs_sync_from_drive": True,
+                }
+            )
+            return result
+
+    # 2. Check highest-step checkpoints for completion
+    tagged: List[Tuple[int, int, str, bool]] = [
+        (step, 1, path, False) for step, path in local_checkpoints
+    ] + [
+        (step, 0, path, True) for step, path in drive_checkpoints
+    ]
+    if not tagged:
+        return result
+
+    tagged.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    effective_max_steps = max_steps if (max_steps is not None and int(max_steps) > 0) else None
+
+    for step, _, ckpt_path, is_from_drive in tagged:
+        if is_checkpoint_completed(ckpt_path, num_train_epochs=num_train_epochs, max_steps=effective_max_steps):
+            result.update(
+                {
+                    "status": "completed",
+                    "completed_source": ckpt_path,
+                    "completed_in_checkpoint": True,
+                    "needs_sync_from_drive": is_from_drive,
+                }
+            )
+            return result
+
+    # 3. Otherwise resume from the highest-step partial checkpoint
+    resumable = [item for item in tagged if _is_resumable_checkpoint_dir(item[2])]
+    pool = resumable if resumable else tagged
+    _, _, best_path, is_from_drive = pool[0]
+    local_resume = (
+        os.path.join(output_dir, os.path.basename(best_path))
+        if is_from_drive
+        else best_path
+    )
+    result.update(
+        {
+            "status": "resume",
+            "resume_checkpoint": local_resume,
+            "source_checkpoint": best_path,
+            "needs_sync_from_drive": is_from_drive,
+        }
+    )
+    return result
+
+
+def prepare_grpo_checkpoint_for_execution(inspection: Dict[str, Any], output_dir: str) -> Dict[str, Any]:
+    """Promote completed GRPO adapters or sync partial Drive checkpoints into output_dir."""
+    prepared = dict(inspection)
+    status = prepared.get("status")
+    drive_target_dir = prepared.get("drive_target_dir")
+
+    if status == "completed":
+        completed_src = prepared.get("completed_source")
+        if completed_src and os.path.abspath(completed_src) != os.path.abspath(output_dir):
+            copied = promote_adapter_files(completed_src, output_dir)
+            print(f"[✓] Promoted/synced {len(copied)} GRPO adapter files from '{completed_src}' -> '{output_dir}'.")
+        if drive_target_dir and not has_complete_adapter(drive_target_dir):
+            sync_checkpoint_to_google_drive(
+                source_dir=output_dir,
+                drive_dir=drive_target_dir,
+                include_checkpoints=False,
+            )
+        prepared["final_adapter_dir"] = output_dir
+        return prepared
+
+    if status == "resume" and prepared.get("needs_sync_from_drive"):
+        src_ckpt = prepared.get("source_checkpoint")
+        dst_ckpt = prepared.get("resume_checkpoint")
+        if src_ckpt and dst_ckpt and os.path.abspath(src_ckpt) != os.path.abspath(dst_ckpt):
+            os.makedirs(output_dir, exist_ok=True)
+            print(f"[*] Syncing GRPO checkpoint from Google Drive: '{src_ckpt}' -> '{dst_ckpt}'...")
+            shutil.copytree(src_ckpt, dst_ckpt, dirs_exist_ok=True)
+            print(f"[✓] GRPO checkpoint synced locally to '{dst_ckpt}'.")
+
+    return prepared
+
+
+class GRPODriveSyncCallback(_HFTrainerCallback):
+    """Lightweight TrainerCallback syncing saved GRPO checkpoint-* directories to Google Drive."""
+
+    def __init__(self, drive_target_dir: str, save_total_limit: Optional[int] = None) -> None:
+        self.drive_target_dir = drive_target_dir
+        self.save_total_limit = save_total_limit
+
+    def on_save(self, args, state, control, **kwargs):
+        if not self.drive_target_dir:
+            return
+        if not getattr(state, "is_world_process_zero", True):
+            return
+        output_dir = getattr(args, "output_dir", None)
+        if not output_dir or not os.path.isdir(output_dir):
+            return
+
+        step = getattr(state, "global_step", None)
+        ckpt_dir = os.path.join(output_dir, f"checkpoint-{step}") if step is not None else None
+        if not ckpt_dir or not os.path.isdir(ckpt_dir):
+            checkpoints = list_checkpoints(output_dir)
+            if not checkpoints:
+                return
+            step, ckpt_dir = checkpoints[-1]
+
+        dest_ckpt = os.path.join(self.drive_target_dir, os.path.basename(ckpt_dir))
+        try:
+            os.makedirs(self.drive_target_dir, exist_ok=True)
+            shutil.copytree(ckpt_dir, dest_ckpt, dirs_exist_ok=True)
+            print(f"[✓] [GRPO DriveSync] Checkpoint 'checkpoint-{step}' synced to Drive: '{dest_ckpt}'")
+            if self.save_total_limit is not None and self.save_total_limit > 0:
+                drive_ckpts = list_checkpoints(self.drive_target_dir)
+                if len(drive_ckpts) > self.save_total_limit:
+                    for _, old_path in drive_ckpts[:-self.save_total_limit]:
+                        shutil.rmtree(old_path, ignore_errors=True)
+        except Exception as exc:
+            print(f"[!] [GRPO DriveSync] Warning: Failed to sync checkpoint-{step} to Drive: {exc}")
+
+
+def apply_grpo_vram_safeguards(
+    args: argparse.Namespace,
+    hw_info: Dict[str, Any],
+    sft_merged: bool = False,
+) -> Dict[str, Any]:
+    """Apply automatic VRAM safeguards on <=45GB GPUs (A100 40GB / L4 24GB) to prevent DoRA/logit OOM."""
+    adjustments: Dict[str, Any] = {}
+    vram_gb = float(hw_info.get("vram_gb", 0.0) or 0.0)
+    if vram_gb <= 0.0 or vram_gb > 45.0 or not getattr(args, "auto_optimize", True):
+        return adjustments
+
+    # (a) Disable DoRA in RL phase unless --force_dora is set (SFT DoRA is already merged into base_model)
+    if (
+        getattr(args, "use_dora", False)
+        and not getattr(args, "force_dora", False)
+        and (sft_merged or getattr(args, "use_vllm", False))
+    ):
+        args.use_dora = False
+        adjustments["use_dora"] = False
+        print(
+            "[VRAM Safeguard] Desativando use_dora na fase RL (mantendo LoRA r="
+            f"{getattr(args, 'lora_r', 64)}, alpha={getattr(args, 'lora_alpha', 128)}, all-linear): "
+            "a DoRA do SFT já foi fundida no base_model via merge_and_unload(), e manter DoRA no RL "
+            "materializa weight_norm denso em 32 camadas (~6-8 GiB extras) causando OOM ao dividir GPU <= 45GB com vLLM."
+        )
+
+    # (b) Reduce micro-batch to 1 when using vLLM or long completions (>=1536) with Phi-4 200k vocab
+    if (
+        getattr(args, "per_device_train_batch_size", 1) > 1
+        and (getattr(args, "use_vllm", False) or getattr(args, "max_completion_length", 0) >= 1536)
+    ):
+        prev_bs = args.per_device_train_batch_size
+        args.per_device_train_batch_size = 1
+        num_gen = max(1, int(getattr(args, "num_generations", 8)))
+        gas = max(int(getattr(args, "gradient_accumulation_steps", num_gen)), num_gen)
+        if gas % num_gen != 0:
+            gas = ((gas + num_gen - 1) // num_gen) * num_gen
+        args.gradient_accumulation_steps = gas
+        adjustments["per_device_train_batch_size"] = 1
+        adjustments["gradient_accumulation_steps"] = gas
+        print(
+            f"[VRAM Safeguard] per_device_train_batch_size reduzido ({prev_bs} -> 1) e "
+            f"gradient_accumulation_steps ajustado para {gas} (divisível por G={num_gen}) "
+            "para cortar pela metade o pico de VRAM dos logits de 200k tokens."
+        )
+
+    # (c) Cap vLLM GPU memory utilization to 0.25 on <=45GB GPUs
+    if getattr(args, "use_vllm", False) and float(getattr(args, "vllm_gpu_memory_utilization", 0.0)) >= 0.30:
+        prev_util = args.vllm_gpu_memory_utilization
+        args.vllm_gpu_memory_utilization = 0.25
+        adjustments["vllm_gpu_memory_utilization"] = 0.25
+        print(
+            f"[VRAM Safeguard] vllm_gpu_memory_utilization ajustado ({prev_util} -> 0.25) "
+            f"em GPU de {vram_gb:.1f} GB para reservar headroom ao backward do GRPO."
+        )
+
+    return adjustments
+
+
+def cleanup_external_vllm_server() -> bool:
+    """Terminate any lingering external trl.scripts.vllm_serve process before colocate init."""
+    try:
+        proc = subprocess.run(
+            ["pkill", "-f", "trl.scripts.vllm_serve"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if proc.returncode == 0:
+            print("[VRAM Safeguard] Processo externo residual 'trl.scripts.vllm_serve' encerrado antes do modo colocate.")
+            time.sleep(1.5)
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            return True
+    except Exception:
+        pass
+    return False
 
 
 # ==============================================================================
@@ -1475,7 +2016,7 @@ def filter_supported_kwargs(
 # Main GRPO Training CLI and Runner
 # ==============================================================================
 
-def parse_args():
+def parse_args(argv: Optional[List[str]] = None):
     parser = argparse.ArgumentParser(
         description="CyberRott v1.3 - Online GRPO Training Pipeline with TRL and PEFT"
     )
@@ -1624,8 +2165,14 @@ def parse_args():
     grpo_group.add_argument(
         "--resume_from_checkpoint",
         type=str,
+        default="auto",
+        help="Path to checkpoint, 'auto' (default) to resume/skip automatically, or 'none'/'false' to start fresh."
+    )
+    grpo_group.add_argument(
+        "--drive_dir",
+        type=str,
         default=None,
-        help="Path to checkpoint or 'auto' to resume from the latest in --output_dir."
+        help="Optional Google Drive checkpoints directory (auto-detects /content/drive/MyDrive/CyberRott_Checkpoints if mounted)."
     )
     grpo_group.add_argument(
         "--logging_steps",
@@ -1700,9 +2247,22 @@ def parse_args():
     )
     lora_group.add_argument(
         "--use_dora",
+        dest="use_dora",
+        action="store_true",
+        default=None,
+        help="Enable Weight-Decomposed Low-Rank Adaptation (DoRA) for enhanced capacity."
+    )
+    lora_group.add_argument(
+        "--no_dora",
+        dest="use_dora",
+        action="store_false",
+        help="Explicitly disable DoRA in the GRPO phase (uses standard LoRA)."
+    )
+    lora_group.add_argument(
+        "--force_dora",
         action="store_true",
         default=False,
-        help="Enable Weight-Decomposed Low-Rank Adaptation (DoRA) for enhanced capacity."
+        help="Force keeping DoRA enabled even on <=45GB GPUs sharing VRAM with vLLM."
     )
 
     # vLLM Arguments
@@ -1763,10 +2323,12 @@ def parse_args():
         help="Hugging Face repository ID if --push_to_hub is active."
     )
 
-    parsed = parser.parse_args()
+    parsed = parser.parse_args(argv)
+
+    if parsed.use_dora is None:
+        parsed.use_dora = bool(parsed.preset_v1_4)
 
     if parsed.preset_v1_4:
-        parsed.use_dora = True
         parsed.lora_r = 64
         parsed.lora_alpha = 128
         parsed.max_completion_length = 2048
@@ -1774,6 +2336,7 @@ def parse_args():
             parsed.max_samples = 4680
         parsed.include_prm = True
         if parsed.adapter_name_or_path == "./cyberrott_v1_1_sft_lora":
+            resolved_v14 = None
             for cand in [
                 "./CyberRott-v1.4-SFT-DoRA",
                 "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott-v1.4-SFT-DoRA",
@@ -1781,8 +2344,9 @@ def parse_args():
                 "/content/CyberRott/CyberRott-v1.4-SFT-DoRA",
             ]:
                 if os.path.exists(cand) and os.path.exists(os.path.join(cand, "adapter_config.json")):
-                    parsed.adapter_name_or_path = cand
+                    resolved_v14 = cand
                     break
+            parsed.adapter_name_or_path = resolved_v14 or "./CyberRott-v1.4-SFT-DoRA"
 
     if parsed.full_scale:
         parsed.max_samples = 4680
@@ -1795,8 +2359,9 @@ def parse_args():
     return parsed
 
 
-def main():
-    args = parse_args()
+def main(args: Optional[argparse.Namespace] = None):
+    if args is None:
+        args = parse_args()
     print("=" * 70)
     print("🚀 CyberRott v1.3 — GRPO Online Training Pipeline (DeepSeek-R1 Style)")
     print("=" * 70)
@@ -1816,6 +2381,27 @@ def main():
     if args.dry_run:
         success = run_dry_run_validation(dataset_records)
         sys.exit(0 if success else 1)
+
+    # 3b. Inspect existing GRPO checkpoints (local & Drive) before loading heavy models
+    inspection = inspect_grpo_checkpoint_state(
+        output_dir=args.output_dir,
+        resume_from_checkpoint=getattr(args, "resume_from_checkpoint", "auto"),
+        num_train_epochs=args.num_train_epochs,
+        max_steps=getattr(args, "max_steps", -1),
+        drive_dir=getattr(args, "drive_dir", None),
+    )
+    prepared = prepare_grpo_checkpoint_for_execution(inspection, args.output_dir)
+
+    if prepared["status"] == "completed":
+        print(
+            f"\n[✓] GRPO training already completed! Final adapter ready at '{args.output_dir}'. "
+            "Skipping retraining."
+        )
+        return {
+            "status": "completed",
+            "output_dir": args.output_dir,
+            "skipped_training": True,
+        }
 
     # 4. Import ML frameworks (executed only for real training runs)
     from datasets import Dataset
@@ -1852,17 +2438,12 @@ def main():
     )
 
     # 7. In-Memory Fusion: SFT LoRA -> Base Model (Policy π_ref with 0 extra VRAM)
-    adapter_path = args.adapter_name_or_path
-    if adapter_path and not (os.path.exists(adapter_path) and os.path.exists(os.path.join(adapter_path, "adapter_config.json"))):
-        basename = os.path.basename(adapter_path.rstrip("/"))
-        for candidate in [
-            os.path.join("/content/drive/MyDrive/CyberRott_Checkpoints", basename),
-            os.path.join("/content", basename),
-            os.path.join("/content/CyberRott", basename),
-        ]:
-            if os.path.exists(candidate) and os.path.exists(os.path.join(candidate, "adapter_config.json")):
-                adapter_path = candidate
-                break
+    adapter_path = resolve_sft_adapter_path(
+        args.adapter_name_or_path,
+        drive_dir=getattr(args, "drive_dir", None),
+        promote=True,
+    )
+    sft_merged = False
 
     if adapter_path and os.path.exists(adapter_path) and os.path.exists(os.path.join(adapter_path, "adapter_config.json")):
         print(f"\n[*] Prior SFT checkpoint detected at: '{adapter_path}'")
@@ -1870,11 +2451,15 @@ def main():
         start_merge = time.time()
         peft_sft = PeftModel.from_pretrained(base_model, adapter_path)
         base_model = peft_sft.merge_and_unload()
+        sft_merged = True
         print(f"[✓] Fusion completed in {time.time() - start_merge:.2f}s!")
         print("[✓] Model with SFT tradecraft now directly acts as reference policy π_ref!")
         print("[✓] Memory savings: 0 additional VRAM required for reference model!\n")
     else:
         print(f"[*] No prior adapter found at '{adapter_path}'. Starting GRPO directly on base model.")
+
+    # Apply VRAM safeguards for <=45GB GPUs (A100 40GB / L4 24GB) before building RL LoRA & vLLM config
+    apply_grpo_vram_safeguards(args, hw_info, sft_merged=sft_merged)
 
     if hasattr(base_model, "enable_input_require_grads"):
         base_model.enable_input_require_grads()
@@ -1983,6 +2568,9 @@ def main():
     )
     use_vllm = vllm_kwargs.get("use_vllm", False)
 
+    if use_vllm and vllm_kwargs.get("vllm_mode") == "colocate":
+        cleanup_external_vllm_server()
+
     sig_params = inspect.signature(GRPOConfig.__init__).parameters
     if not use_vllm:
         vllm_mode_desc = "Disabled (native Hugging Face / PyTorch KV-cache generation)"
@@ -2021,6 +2609,8 @@ def main():
         "push_to_hub": args.push_to_hub,
         "hub_model_id": args.hub_model_id,
     }
+    if "warmup_ratio" not in supported_grpo_fields and "warmup_steps" in supported_grpo_fields:
+        grpo_config_kwargs["warmup_steps"] = args.warmup_ratio
     if use_gc and "gradient_checkpointing_kwargs" in sig_params:
         grpo_config_kwargs["gradient_checkpointing_kwargs"] = {"use_reentrant": False}
 
@@ -2088,6 +2678,15 @@ def main():
     print(f"[*] Initializing GRPOTrainer with {len(reward_suite)} verifiable reward functions...")
     trainer = GRPOTrainer(**trainer_kwargs)
 
+    drive_target_dir = prepared.get("drive_target_dir")
+    if drive_target_dir and hasattr(trainer, "add_callback"):
+        trainer.add_callback(
+            GRPODriveSyncCallback(
+                drive_target_dir=drive_target_dir,
+                save_total_limit=getattr(args, "save_total_limit", None),
+            )
+        )
+
     eos_ids = get_eos_token_ids(tokenizer)
     if eos_ids:
         print(f"[*] Stop/EOS Token IDs configured for generation ({len(eos_ids)} tokens): {eos_ids}")
@@ -2113,7 +2712,9 @@ def main():
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-    resume_checkpoint = resolve_resume_checkpoint(args.resume_from_checkpoint, args.output_dir)
+    resume_checkpoint = prepared.get("resume_checkpoint") or resolve_resume_checkpoint(
+        args.resume_from_checkpoint, args.output_dir
+    )
     train_result = trainer.train(resume_from_checkpoint=resume_checkpoint)
 
     print("\n" + "=" * 70)
@@ -2130,7 +2731,8 @@ def main():
     # 13. Synchronize with Google Drive if in Colab
     sync_checkpoint_to_google_drive(
         source_dir=args.output_dir,
-        target_subfolder="CyberRott-v1.3-GRPO"
+        target_subfolder=None,
+        drive_dir=getattr(args, "drive_dir", None),
     )
 
     if args.push_to_hub:

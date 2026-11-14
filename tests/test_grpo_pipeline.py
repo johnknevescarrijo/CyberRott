@@ -41,6 +41,14 @@ from scripts.train_grpo import (
     SUPPORTED_BACKBONES,
     resolve_backbone_config,
     build_lora_config,
+    apply_grpo_vram_safeguards,
+    cleanup_external_vllm_server,
+    resolve_sft_adapter_path,
+    inspect_grpo_checkpoint_state,
+    prepare_grpo_checkpoint_for_execution,
+    GRPODriveSyncCallback,
+    has_complete_adapter,
+    list_checkpoints,
 )
 
 
@@ -296,7 +304,9 @@ class TestGRPOArgsAndAutoAdjustment:
             assert args.beta == 0.02
             assert args.output_dir == "./CyberRott-v1.3-GRPO"
             assert args.save_steps == 20
-            assert args.resume_from_checkpoint is None
+            assert args.resume_from_checkpoint == "auto"
+            assert args.drive_dir is None
+            assert args.force_dora is False
             assert args.gradient_checkpointing is None
             assert args.use_vllm is False
             assert args.vllm_gpu_memory_utilization == 0.3
@@ -1026,6 +1036,200 @@ class TestGRPOv14Upgrades:
         assert config_dora.r == 64
         assert config_dora.lora_alpha == 128
         assert getattr(config_dora, "use_dora", False) is True
+
+
+class TestGRPOVramSafeguards:
+    """Valida proteções automáticas contra OOM em GPUs <= 45GB (A100 40GB / L4 24GB)."""
+
+    def test_vram_safeguards_disable_dora_reduce_batch_and_cap_vllm_on_a100_40gb(self):
+        args = parse_args(["--preset_v1_4", "--use_vllm"])
+        assert args.use_dora is True
+        assert args.per_device_train_batch_size == 2
+        assert args.vllm_gpu_memory_utilization == 0.30
+
+        hw_info = {"device_name": "NVIDIA A100-SXM4-40GB", "vram_gb": 39.5}
+        adjustments = apply_grpo_vram_safeguards(args, hw_info, sft_merged=True)
+
+        assert adjustments["use_dora"] is False
+        assert args.use_dora is False
+        assert args.per_device_train_batch_size == 1
+        assert args.gradient_accumulation_steps >= args.num_generations
+        assert (args.per_device_train_batch_size * args.gradient_accumulation_steps) % args.num_generations == 0
+        assert args.vllm_gpu_memory_utilization == 0.25
+
+    def test_vram_safeguards_respect_force_dora(self):
+        args = parse_args(["--preset_v1_4", "--use_vllm", "--force_dora"])
+        hw_info = {"device_name": "NVIDIA A100-SXM4-40GB", "vram_gb": 39.5}
+        apply_grpo_vram_safeguards(args, hw_info, sft_merged=True)
+
+        assert args.use_dora is True
+        assert args.per_device_train_batch_size == 1
+        assert args.vllm_gpu_memory_utilization == 0.25
+
+    def test_vram_safeguards_noop_on_80gb_and_cpu(self):
+        for vram_gb in (80.0, 0.0):
+            args = parse_args(["--preset_v1_4", "--use_vllm"])
+            adjustments = apply_grpo_vram_safeguards(args, {"vram_gb": vram_gb}, sft_merged=True)
+            assert adjustments == {}
+            assert args.use_dora is True
+            assert args.per_device_train_batch_size == 2
+            assert args.vllm_gpu_memory_utilization == 0.30
+
+    def test_no_dora_overrides_preset_v1_4(self):
+        args = parse_args(["--preset_v1_4", "--no_dora"])
+        assert args.use_dora is False
+        assert args.lora_r == 64
+        assert args.lora_alpha == 128
+
+    def test_cleanup_external_vllm_server_invokes_pkill(self, monkeypatch):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        mock_run = MagicMock(return_value=SimpleNamespace(returncode=0))
+        monkeypatch.setattr("scripts.train_grpo.subprocess.run", mock_run)
+        monkeypatch.setattr("scripts.train_grpo.time.sleep", lambda *_: None)
+
+        killed = cleanup_external_vllm_server()
+        assert killed is True
+        mock_run.assert_called_once()
+        cmd = mock_run.call_args.args[0]
+        assert "pkill" in cmd
+        assert "trl.scripts.vllm_serve" in cmd
+
+
+class TestGRPOAdapterAndCheckpointAutomation:
+    """Valida resolução de SFT checkpoint-*, auto-skip/resume do GRPO e DriveSync."""
+
+    @staticmethod
+    def _write_adapter(directory, with_heavy=False):
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "adapter_config.json").write_text('{"peft_type": "LORA", "r": 64}', encoding="utf-8")
+        (directory / "adapter_model.safetensors").write_bytes(b"weights")
+        (directory / "tokenizer_config.json").write_text("{}", encoding="utf-8")
+        if with_heavy:
+            (directory / "optimizer.pt").write_bytes(b"opt")
+            (directory / "scheduler.pt").write_bytes(b"sched")
+            (directory / "rng_state.pth").write_bytes(b"rng")
+
+    @staticmethod
+    def _write_grpo_ckpt(parent_dir, step, epoch, max_steps=500, num_train_epochs=1):
+        ckpt = parent_dir / f"checkpoint-{step}"
+        TestGRPOAdapterAndCheckpointAutomation._write_adapter(ckpt, with_heavy=True)
+        (ckpt / "trainer_state.json").write_text(
+            json.dumps(
+                {
+                    "epoch": epoch,
+                    "global_step": step,
+                    "max_steps": max_steps,
+                    "num_train_epochs": num_train_epochs,
+                }
+            ),
+            encoding="utf-8",
+        )
+        return ckpt
+
+    def test_resolve_sft_adapter_from_checkpoint_subdir_local_and_drive(self, tmp_path):
+        # 1. Local SFT dir with only checkpoint-879
+        sft_local = tmp_path / "CyberRott-v1.4-SFT-DoRA"
+        ckpt_879 = sft_local / "checkpoint-879"
+        self._write_adapter(ckpt_879, with_heavy=True)
+
+        resolved = resolve_sft_adapter_path(
+            str(sft_local),
+            drive_mount=str(tmp_path / "unmounted"),
+            promote=True,
+        )
+        assert resolved == str(sft_local)
+        assert has_complete_adapter(str(sft_local))
+        assert not (sft_local / "optimizer.pt").exists()
+
+        # 2. Drive underscore variant with checkpoint-879 while local doesn't exist yet
+        local_missing = tmp_path / "local_target" / "CyberRott-v1.4-SFT-DoRA"
+        drive_root = tmp_path / "drive" / "MyDrive" / "CyberRott_Checkpoints"
+        drive_sft_ckpt = drive_root / "CyberRott_v1_4_SFT_DoRA" / "checkpoint-879"
+        self._write_adapter(drive_sft_ckpt, with_heavy=True)
+
+        resolved_drive = resolve_sft_adapter_path(
+            str(local_missing),
+            drive_dir=str(drive_root),
+            promote=True,
+        )
+        assert resolved_drive == str(local_missing)
+        assert has_complete_adapter(str(local_missing))
+        assert not (local_missing / "optimizer.pt").exists()
+
+    def test_grpo_completion_detection_and_promotion(self, tmp_path):
+        out_dir = tmp_path / "CyberRott-v1.4-GRPO"
+        self._write_grpo_ckpt(out_dir, step=500, epoch=1.0, max_steps=500, num_train_epochs=1)
+
+        inspection = inspect_grpo_checkpoint_state(
+            output_dir=str(out_dir),
+            resume_from_checkpoint="auto",
+            num_train_epochs=1,
+            drive_mount=str(tmp_path / "unmounted"),
+        )
+        assert inspection["status"] == "completed"
+        assert inspection["completed_in_checkpoint"] is True
+
+        prepare_grpo_checkpoint_for_execution(inspection, str(out_dir))
+        assert has_complete_adapter(str(out_dir))
+        assert not (out_dir / "optimizer.pt").exists()
+
+    def test_grpo_partial_drive_sync_and_resume(self, tmp_path):
+        local_out = tmp_path / "CyberRott-v1.4-GRPO"
+        self._write_grpo_ckpt(local_out, step=20, epoch=0.1, max_steps=500, num_train_epochs=1)
+
+        drive_root = tmp_path / "drive" / "MyDrive" / "CyberRott_Checkpoints"
+        drive_run = drive_root / "CyberRott_v1_4_GRPO"
+        self._write_grpo_ckpt(drive_run, step=60, epoch=0.3, max_steps=500, num_train_epochs=1)
+
+        inspection = inspect_grpo_checkpoint_state(
+            output_dir=str(local_out),
+            resume_from_checkpoint="auto",
+            num_train_epochs=1,
+            drive_dir=str(drive_root),
+        )
+        assert inspection["status"] == "resume"
+        assert inspection["needs_sync_from_drive"] is True
+        assert inspection["resume_checkpoint"] == str(local_out / "checkpoint-60")
+
+        prepare_grpo_checkpoint_for_execution(inspection, str(local_out))
+        assert (local_out / "checkpoint-60" / "trainer_state.json").exists()
+        assert resolve_resume_checkpoint("auto", str(local_out)) == str(local_out / "checkpoint-60")
+        assert resolve_resume_checkpoint("none", str(local_out)) is None
+
+    def test_grpo_drive_sync_callback_and_limit(self, tmp_path):
+        from types import SimpleNamespace
+
+        local_out = tmp_path / "CyberRott-v1.4-GRPO"
+        drive_target = tmp_path / "drive" / "CyberRott_Checkpoints" / "CyberRott-v1.4-GRPO"
+
+        cb = GRPODriveSyncCallback(drive_target_dir=str(drive_target), save_total_limit=2)
+        args = SimpleNamespace(output_dir=str(local_out))
+
+        for step in (20, 40, 60):
+            self._write_grpo_ckpt(local_out, step=step, epoch=step / 200.0, max_steps=200, num_train_epochs=1)
+            cb.on_save(args, SimpleNamespace(global_step=step, is_world_process_zero=True), control=None)
+
+        assert [s for s, _ in list_checkpoints(str(drive_target))] == [40, 60]
+
+    def test_notebook_cells_updated_for_colocate_oom_and_auto_resume(self):
+        nb_path = os.path.join(os.path.dirname(__file__), "..", "notebooks", "CyberRott_Colab_Training.ipynb")
+        with open(nb_path, "r", encoding="utf-8") as fh:
+            nb = json.load(fh)
+
+        c6 = "".join(nb["cells"][6]["source"])
+        c8 = "".join(nb["cells"][8]["source"])
+        c10 = "".join(nb["cells"][10]["source"])
+
+        assert "--resume_from_checkpoint auto" in c6
+        assert "checkpoint-" in c6
+        assert "--per_device_train_batch_size 1" in c8
+        assert "--vllm_gpu_memory_utilization 0.25" in c8
+        assert "vllm_mode" in c8
+        assert "PYTORCH_ALLOC_CONF" in c8
+        assert "checkpoint-" in c10
+
 
 
 
