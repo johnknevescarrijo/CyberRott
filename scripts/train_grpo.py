@@ -995,6 +995,104 @@ def prepare_grpo_checkpoint_for_execution(inspection: Dict[str, Any], output_dir
     return prepared
 
 
+def _patch_trainer_state_batch_size(state_path: str, target_batch_size: int) -> bool:
+    """Update train_batch_size in a single trainer_state.json file if it differs from target_batch_size."""
+    if not os.path.isfile(state_path):
+        return False
+    try:
+        with open(state_path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception as exc:
+        print(f"[!] [VRAM Safeguard] Warning: Failed to read '{state_path}': {exc}")
+        return False
+
+    if not isinstance(data, dict):
+        return False
+
+    old_bs = data.get("train_batch_size")
+    if old_bs == target_batch_size:
+        return False
+
+    data["train_batch_size"] = target_batch_size
+    try:
+        with open(state_path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2, ensure_ascii=False)
+            fh.write("\n")
+    except Exception as exc:
+        print(f"[!] [VRAM Safeguard] Warning: Failed to write '{state_path}': {exc}")
+        return False
+
+    print(
+        f"[VRAM Safeguard] Atualizado train_batch_size ({old_bs} -> {target_batch_size}) "
+        f"em '{state_path}' para impedir que o Trainer restaure micro-batch maior ao retomar checkpoint."
+    )
+    return True
+
+
+def patch_checkpoint_batch_size(
+    checkpoint_dir: Optional[str],
+    target_batch_size: int,
+    output_dir: Optional[str] = None,
+    drive_dir: Optional[str] = None,
+    drive_mount: Optional[str] = None,
+) -> bool:
+    """Patch train_batch_size in trainer_state.json for checkpoint_dir, output_dir checkpoints, and Drive mirrors."""
+    if not checkpoint_dir or target_batch_size is None:
+        return False
+    target_bs = int(target_batch_size)
+    if target_bs <= 0:
+        return False
+
+    candidate_ckpt_dirs: List[str] = []
+    seen_realpaths: Set[str] = set()
+
+    def _add_ckpt_dir(path: Optional[str]) -> None:
+        if not path or not os.path.isdir(path):
+            return
+        real = os.path.realpath(path)
+        if real not in seen_realpaths:
+            seen_realpaths.add(real)
+            candidate_ckpt_dirs.append(path)
+
+    norm_ckpt = os.path.normpath(checkpoint_dir)
+    base = os.path.basename(norm_ckpt)
+    ckpt_basename: Optional[str] = None
+    inferred_output_dir: Optional[str] = None
+    if re.fullmatch(r"checkpoint-\d+", base):
+        ckpt_basename = base
+        inferred_output_dir = os.path.dirname(norm_ckpt) or None
+    _add_ckpt_dir(checkpoint_dir)
+
+    effective_output_dir = output_dir or inferred_output_dir
+    if effective_output_dir and os.path.isdir(effective_output_dir):
+        for _, ckpt_path in list_checkpoints(effective_output_dir):
+            _add_ckpt_dir(ckpt_path)
+
+    effective_drive_mount = DEFAULT_DRIVE_MOUNT if drive_mount is None else drive_mount
+    if effective_output_dir:
+        drive_info = resolve_drive_paths(
+            effective_output_dir,
+            drive_dir=drive_dir,
+            drive_mount=effective_drive_mount,
+        )
+        for d_dir in drive_info.get("candidate_drive_dirs", []):
+            if ckpt_basename:
+                _add_ckpt_dir(os.path.join(d_dir, ckpt_basename))
+            for _, d_ckpt_path in list_checkpoints(d_dir):
+                _add_ckpt_dir(d_ckpt_path)
+
+    if not candidate_ckpt_dirs:
+        return False
+
+    updated = False
+    for ckpt_path in candidate_ckpt_dirs:
+        state_path = os.path.join(ckpt_path, "trainer_state.json")
+        if _patch_trainer_state_batch_size(state_path, target_bs):
+            updated = True
+
+    return updated
+
+
 class GRPODriveSyncCallback(_HFTrainerCallback):
     """Lightweight TrainerCallback syncing saved GRPO checkpoint-* directories to Google Drive."""
 
@@ -2590,6 +2688,16 @@ def main(args: Optional[argparse.Namespace] = None):
     # Apply VRAM safeguards for <=45GB GPUs (A100 40GB / L4 24GB) before building RL LoRA & vLLM config
     apply_grpo_vram_safeguards(args, hw_info, sft_merged=sft_merged)
 
+    resume_checkpoint = prepared.get("resume_checkpoint") or resolve_resume_checkpoint(
+        args.resume_from_checkpoint, args.output_dir
+    )
+    patch_checkpoint_batch_size(
+        resume_checkpoint,
+        args.per_device_train_batch_size,
+        output_dir=args.output_dir,
+        drive_dir=getattr(args, "drive_dir", None),
+    )
+
     if hasattr(base_model, "enable_input_require_grads"):
         base_model.enable_input_require_grads()
 
@@ -2841,9 +2949,15 @@ def main(args: Optional[argparse.Namespace] = None):
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-    resume_checkpoint = prepared.get("resume_checkpoint") or resolve_resume_checkpoint(
-        args.resume_from_checkpoint, args.output_dir
+    patch_checkpoint_batch_size(
+        resume_checkpoint,
+        args.per_device_train_batch_size,
+        output_dir=args.output_dir,
+        drive_dir=getattr(args, "drive_dir", None),
     )
+    if hasattr(trainer, "args") and trainer.args is not None:
+        trainer.args.per_device_train_batch_size = args.per_device_train_batch_size
+    trainer._train_batch_size = args.per_device_train_batch_size
     train_result = trainer.train(resume_from_checkpoint=resume_checkpoint)
 
     print("\n" + "=" * 70)
