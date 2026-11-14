@@ -24,13 +24,14 @@ import re
 import json
 import time
 import shutil
+import signal
 import subprocess
 import urllib.request
 import argparse
 import inspect
 import functools
 import dataclasses
-from typing import List, Dict, Any, Optional, Tuple, Union
+from typing import List, Dict, Any, Optional, Tuple, Union, Set
 
 # -----------------------------------------------------------------------------
 # Critical Compatibility Layer: Protection against transformers vs. TRL type divergence
@@ -1091,24 +1092,141 @@ def apply_grpo_vram_safeguards(
     return adjustments
 
 
+def _get_protected_pids() -> Set[int]:
+    """Return current PID, parent PID, and all ancestor PIDs from /proc so cleanup never kills self or ancestors."""
+    protected: Set[int] = set()
+    pid = os.getpid()
+    ppid = os.getppid()
+    for p in (pid, ppid):
+        if p and p > 0:
+            protected.add(p)
+
+    for start in (pid, ppid):
+        cursor = start
+        while cursor and cursor > 1:
+            next_parent = None
+            try:
+                with open(f"/proc/{cursor}/status", "r", encoding="utf-8") as fh:
+                    for line in fh:
+                        if line.startswith("PPid:"):
+                            next_parent = int(line.split(":", 1)[1].strip())
+                            break
+            except (OSError, ValueError):
+                try:
+                    with open(f"/proc/{cursor}/stat", "r", encoding="utf-8") as fh:
+                        content = fh.read()
+                    rparen = content.rfind(")")
+                    if rparen != -1:
+                        fields = content[rparen + 2:].split()
+                        if len(fields) >= 2:
+                            next_parent = int(fields[1])
+                except (OSError, ValueError):
+                    break
+            if next_parent is None or next_parent <= 0 or next_parent in protected:
+                break
+            protected.add(next_parent)
+            cursor = next_parent
+    return protected
+
+
 def cleanup_external_vllm_server() -> bool:
-    """Terminate any lingering external trl.scripts.vllm_serve process before colocate init."""
+    """Terminate lingering vLLM processes and orphan GPU compute apps (e.g. VLLM::EngineCore) with SIGKILL."""
+    protected_pids = _get_protected_pids()
+    vllm_patterns = ("trl.scripts.vllm_serve", "VLLM::EngineCore", "vllm.entrypoints")
+    killed_pids: List[int] = []
+    pkill_killed = False
+
+    # 1. Inspect active GPU compute processes via nvidia-smi and SIGKILL any non-ancestor orphan PIDs
     try:
-        proc = subprocess.run(
-            ["pkill", "-f", "trl.scripts.vllm_serve"],
+        smi_proc = subprocess.run(
+            ["nvidia-smi", "--query-compute-apps=pid", "--format=csv,noheader,nounits"],
             check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
         )
-        if proc.returncode == 0:
-            print("[VRAM Safeguard] Processo externo residual 'trl.scripts.vllm_serve' encerrado antes do modo colocate.")
-            time.sleep(1.5)
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            return True
+        smi_out = getattr(smi_proc, "stdout", "") or ""
+        if getattr(smi_proc, "returncode", 1) == 0 and smi_out.strip():
+            for raw_line in smi_out.splitlines():
+                token = raw_line.strip()
+                if not token.isdigit():
+                    continue
+                gpu_pid = int(token)
+                if gpu_pid <= 0 or gpu_pid in protected_pids:
+                    continue
+                try:
+                    os.kill(gpu_pid, signal.SIGKILL)
+                    if gpu_pid not in killed_pids:
+                        killed_pids.append(gpu_pid)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
     except Exception:
         pass
+
+    # 2. Scan /proc for vLLM patterns (cmdline + comm) while protecting self & ancestors
+    protected_matches_pattern = False
+    if os.path.isdir("/proc"):
+        try:
+            proc_entries = os.listdir("/proc")
+        except OSError:
+            proc_entries = []
+        for entry in proc_entries:
+            if not entry.isdigit():
+                continue
+            proc_pid = int(entry)
+            text_parts: List[str] = []
+            for fname in ("cmdline", "comm"):
+                try:
+                    with open(f"/proc/{proc_pid}/{fname}", "rb") as fh:
+                        raw = fh.read()
+                    if raw:
+                        text_parts.append(raw.replace(b"\x00", b" ").decode("utf-8", errors="ignore"))
+                except OSError:
+                    continue
+            combined = " ".join(text_parts)
+            if not combined:
+                continue
+            if any(pat in combined for pat in vllm_patterns):
+                if proc_pid in protected_pids:
+                    protected_matches_pattern = True
+                    continue
+                try:
+                    os.kill(proc_pid, signal.SIGKILL)
+                    if proc_pid not in killed_pids:
+                        killed_pids.append(proc_pid)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+
+    # 3. Fallback pkill -9 -f only when no protected ancestor matches any vLLM pattern
+    if not protected_matches_pattern:
+        try:
+            proc = subprocess.run(
+                ["pkill", "-9", "-f", "|".join(vllm_patterns)],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            if getattr(proc, "returncode", 1) == 0:
+                pkill_killed = True
+        except Exception:
+            pass
+
+    if killed_pids or pkill_killed:
+        if killed_pids:
+            print(f"[VRAM Safeguard] Processos órfãos/vLLM encerrados com SIGKILL: {killed_pids}")
+        else:
+            print("[VRAM Safeguard] Processo externo residual vLLM encerrado com SIGKILL antes do modo colocate.")
+        time.sleep(1.5)
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            try:
+                free_bytes, total_bytes = torch.cuda.mem_get_info()
+                free_gb = free_bytes / (1024 ** 3)
+                total_gb = total_bytes / (1024 ** 3)
+                print(f"[VRAM Safeguard] VRAM livre após limpeza: {free_gb:.2f} GiB / {total_gb:.2f} GiB.")
+            except Exception:
+                pass
+        return True
     return False
 
 
@@ -2412,6 +2530,17 @@ def main(args: Optional[argparse.Namespace] = None):
 
     trl_version = getattr(trl, "__version__", "unknown")
     print(f"[*] Detected TRL version: v{trl_version}")
+
+    # 4b. Pre-model-load GPU/vLLM orphan cleanup (eliminates lingering VLLM::EngineCore holding VRAM)
+    if torch.cuda.is_available():
+        grpo_init_params = inspect.signature(GRPOConfig.__init__).parameters
+        uses_colocate = ("vllm_mode" in grpo_init_params) or (not getattr(args, "use_vllm", False))
+        if uses_colocate or not probe_vllm_server(
+            host=getattr(args, "vllm_server_host", "127.0.0.1"),
+            port=getattr(args, "vllm_server_port", 8000),
+            timeout=1.0,
+        ):
+            cleanup_external_vllm_server()
 
     # 5. Load Tokenizer
     print(f"[*] Loading tokenizer from '{args.model_name_or_path}'...")

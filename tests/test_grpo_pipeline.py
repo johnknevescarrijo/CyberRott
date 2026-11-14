@@ -43,6 +43,7 @@ from scripts.train_grpo import (
     build_lora_config,
     apply_grpo_vram_safeguards,
     cleanup_external_vllm_server,
+    _get_protected_pids,
     resolve_sft_adapter_path,
     inspect_grpo_checkpoint_state,
     prepare_grpo_checkpoint_for_execution,
@@ -1085,16 +1086,91 @@ class TestGRPOVramSafeguards:
         from types import SimpleNamespace
         from unittest.mock import MagicMock
 
-        mock_run = MagicMock(return_value=SimpleNamespace(returncode=0))
-        monkeypatch.setattr("scripts.train_grpo.subprocess.run", mock_run)
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd[0] == "nvidia-smi":
+                return SimpleNamespace(returncode=1, stdout="")
+            return SimpleNamespace(returncode=0, stdout="")
+
+        monkeypatch.setattr("scripts.train_grpo.subprocess.run", fake_run)
         monkeypatch.setattr("scripts.train_grpo.time.sleep", lambda *_: None)
+        monkeypatch.setattr("scripts.train_grpo.os.path.isdir", lambda p: False if p == "/proc" else os.path.isdir(p))
 
         killed = cleanup_external_vllm_server()
         assert killed is True
-        mock_run.assert_called_once()
-        cmd = mock_run.call_args.args[0]
-        assert "pkill" in cmd
-        assert "trl.scripts.vllm_serve" in cmd
+        pkill_cmds = [c for c in calls if c[0] == "pkill"]
+        assert len(pkill_cmds) == 1
+        cmd = pkill_cmds[0]
+        assert "-9" in cmd
+        assert "-f" in cmd
+        assert any("trl.scripts.vllm_serve" in arg and "VLLM::EngineCore" in arg for arg in cmd)
+
+    def test_cleanup_external_vllm_server_kills_orphan_gpu_pids_and_protects_ancestors(self, monkeypatch, capsys):
+        import signal
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        self_pid = os.getpid()
+        parent_pid = os.getppid()
+        ancestor_pid = 999991
+        protected_set = {self_pid, parent_pid, ancestor_pid}
+
+        def fake_run(cmd, **kwargs):
+            if cmd[0] == "nvidia-smi":
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=f"23116\n{self_pid}\n{parent_pid}\n{ancestor_pid}\n24501\n",
+                )
+            return SimpleNamespace(returncode=1, stdout="")
+
+        mock_kill = MagicMock()
+        monkeypatch.setattr("scripts.train_grpo._get_protected_pids", lambda: protected_set)
+        monkeypatch.setattr("scripts.train_grpo.subprocess.run", fake_run)
+        monkeypatch.setattr("scripts.train_grpo.os.kill", mock_kill)
+        monkeypatch.setattr("scripts.train_grpo.time.sleep", lambda *_: None)
+        monkeypatch.setattr("scripts.train_grpo.os.path.isdir", lambda p: False if p == "/proc" else os.path.isdir(p))
+        monkeypatch.setattr("scripts.train_grpo.torch.cuda.is_available", lambda: True)
+        monkeypatch.setattr("scripts.train_grpo.torch.cuda.empty_cache", MagicMock())
+        monkeypatch.setattr(
+            "scripts.train_grpo.torch.cuda.mem_get_info",
+            lambda: (38 * (1024 ** 3), 40 * (1024 ** 3)),
+        )
+
+        killed = cleanup_external_vllm_server()
+        assert killed is True
+
+        killed_args = [call.args for call in mock_kill.call_args_list]
+        assert (23116, signal.SIGKILL) in killed_args
+        assert (24501, signal.SIGKILL) in killed_args
+        killed_pids = {pid for pid, _ in killed_args}
+        assert self_pid not in killed_pids
+        assert parent_pid not in killed_pids
+        assert ancestor_pid not in killed_pids
+
+        out = capsys.readouterr().out
+        assert "23116" in out
+        assert "38.00 GiB / 40.00 GiB" in out
+
+    def test_cleanup_external_vllm_server_handles_missing_nvidia_smi(self, monkeypatch):
+        from types import SimpleNamespace
+
+        def fake_run(cmd, **kwargs):
+            if cmd[0] == "nvidia-smi":
+                raise FileNotFoundError("nvidia-smi not found")
+            return SimpleNamespace(returncode=1, stdout="")
+
+        monkeypatch.setattr("scripts.train_grpo.subprocess.run", fake_run)
+        monkeypatch.setattr("scripts.train_grpo.os.path.isdir", lambda p: False if p == "/proc" else os.path.isdir(p))
+
+        assert cleanup_external_vllm_server() is False
+
+    def test_get_protected_pids_includes_self_and_parent(self):
+        protected = _get_protected_pids()
+        assert os.getpid() in protected
+        if os.getppid() > 0:
+            assert os.getppid() in protected
 
 
 class TestGRPOAdapterAndCheckpointAutomation:
@@ -1221,6 +1297,7 @@ class TestGRPOAdapterAndCheckpointAutomation:
         c6 = "".join(nb["cells"][6]["source"])
         c8 = "".join(nb["cells"][8]["source"])
         c10 = "".join(nb["cells"][10]["source"])
+        c12 = "".join(nb["cells"][12]["source"])
 
         assert "--resume_from_checkpoint auto" in c6
         assert "checkpoint-" in c6
@@ -1228,7 +1305,13 @@ class TestGRPOAdapterAndCheckpointAutomation:
         assert "--vllm_gpu_memory_utilization 0.25" in c8
         assert "vllm_mode" in c8
         assert "PYTORCH_ALLOC_CONF" in c8
+        assert "VLLM::EngineCore" in c8
+        assert "nvidia-smi" in c8
+        assert "SIGKILL" in c8
         assert "checkpoint-" in c10
+        assert "VLLM::EngineCore" in c12
+        assert "nvidia-smi" in c12
+        assert "SIGKILL" in c12
 
 
 
