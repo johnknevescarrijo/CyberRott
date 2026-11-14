@@ -462,3 +462,64 @@ class TestTrainExecutionWithMocks:
         train_colab.AutoModelForCausalLM.from_pretrained.assert_not_called()
         train_colab.PeftModel.from_pretrained.assert_not_called()
         mocks["trainer"].train.assert_not_called()
+
+    def test_patch_checkpoint_batch_size_updates_before_sft_resume(self, tmp_path, monkeypatch, capsys):
+        out_dir = tmp_path / "CyberRott-v1.4-SFT-DoRA"
+        ckpt_100 = _write_checkpoint(out_dir, step=100, epoch=0.5, max_steps=879, num_train_epochs=3)
+        state_path = ckpt_100 / "trainer_state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["train_batch_size"] = 2
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+
+        drive_root = tmp_path / "drive" / "CyberRott_Checkpoints"
+        drive_run = drive_root / "CyberRott_v1_4_SFT_DoRA"
+        drive_ckpt_100 = _write_checkpoint(drive_run, step=100, epoch=0.5, max_steps=879, num_train_epochs=3)
+        drive_state_path = drive_ckpt_100 / "trainer_state.json"
+        drive_state = json.loads(drive_state_path.read_text(encoding="utf-8"))
+        drive_state["train_batch_size"] = 2
+        drive_state_path.write_text(json.dumps(drive_state), encoding="utf-8")
+
+        # Direct unit check on Drive + local checkpoint
+        assert train_colab.patch_checkpoint_batch_size(
+            str(ckpt_100),
+            1,
+            output_dir=str(out_dir),
+            drive_dir=str(drive_root),
+        ) is True
+        assert json.loads(state_path.read_text(encoding="utf-8"))["train_batch_size"] == 1
+        assert json.loads(drive_state_path.read_text(encoding="utf-8"))["train_batch_size"] == 1
+        assert "[VRAM Safeguard] Atualizado train_batch_size (2 -> 1)" in capsys.readouterr().out
+
+        # Reset local checkpoint-100 to 2 and verify train() patches it before trainer.train(...)
+        state["train_batch_size"] = 2
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+
+        data_file = tmp_path / "train.jsonl"
+        data_file.write_text('{"text": "sample"}\n', encoding="utf-8")
+        mocks = self._mock_hf_stack(monkeypatch, data_file)
+        observed = {}
+
+        def _check_before_train(resume_from_checkpoint=None):
+            observed["resume_from_checkpoint"] = resume_from_checkpoint
+            observed["disk_train_batch_size"] = json.loads(state_path.read_text(encoding="utf-8"))["train_batch_size"]
+
+        mocks["trainer"].train.side_effect = _check_before_train
+
+        args = train_colab.parse_args(
+            [
+                "--output_dir",
+                str(out_dir),
+                "--data_path",
+                str(data_file),
+                "--epochs",
+                "3",
+                "--per_device_train_batch_size",
+                "1",
+                "--drive_dir",
+                str(drive_root),
+            ]
+        )
+        train_colab.train(args)
+
+        assert observed["resume_from_checkpoint"] == str(ckpt_100)
+        assert observed["disk_train_batch_size"] == 1

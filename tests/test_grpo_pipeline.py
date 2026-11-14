@@ -50,6 +50,7 @@ from scripts.train_grpo import (
     GRPODriveSyncCallback,
     has_complete_adapter,
     list_checkpoints,
+    patch_checkpoint_batch_size,
 )
 
 
@@ -1312,6 +1313,164 @@ class TestGRPOAdapterAndCheckpointAutomation:
         assert "VLLM::EngineCore" in c12
         assert "nvidia-smi" in c12
         assert "SIGKILL" in c12
+
+    def test_patch_checkpoint_batch_size_updates_local_siblings_and_drive(self, tmp_path, capsys):
+        local_out = tmp_path / "CyberRott-v1.4-GRPO"
+        ckpt_50 = self._write_grpo_ckpt(local_out, step=50, epoch=0.1, max_steps=500, num_train_epochs=1)
+        ckpt_100 = self._write_grpo_ckpt(local_out, step=100, epoch=0.2, max_steps=500, num_train_epochs=1)
+
+        drive_root = tmp_path / "drive" / "MyDrive" / "CyberRott_Checkpoints"
+        drive_run = drive_root / "CyberRott_v1_4_GRPO"
+        drive_ckpt_100 = self._write_grpo_ckpt(drive_run, step=100, epoch=0.2, max_steps=500, num_train_epochs=1)
+
+        for ckpt in (ckpt_50, ckpt_100, drive_ckpt_100):
+            state_path = ckpt / "trainer_state.json"
+            data = json.loads(state_path.read_text(encoding="utf-8"))
+            data["train_batch_size"] = 2
+            state_path.write_text(json.dumps(data), encoding="utf-8")
+
+        changed = patch_checkpoint_batch_size(
+            str(ckpt_100),
+            1,
+            output_dir=str(local_out),
+            drive_dir=str(drive_root),
+        )
+        assert changed is True
+
+        captured = capsys.readouterr().out
+        assert "[VRAM Safeguard] Atualizado train_batch_size (2 -> 1)" in captured
+
+        for ckpt in (ckpt_50, ckpt_100, drive_ckpt_100):
+            updated = json.loads((ckpt / "trainer_state.json").read_text(encoding="utf-8"))
+            assert updated["train_batch_size"] == 1
+            assert updated["max_steps"] == 500
+
+        # Idempotent on repeated invocation and safe on None
+        assert patch_checkpoint_batch_size(str(ckpt_100), 1, output_dir=str(local_out), drive_dir=str(drive_root)) is False
+        assert patch_checkpoint_batch_size(None, 1) is False
+
+    def test_main_patches_checkpoint_batch_size_and_syncs_trainer_batch_size(self, tmp_path, monkeypatch):
+        import types
+        from unittest.mock import MagicMock
+        import scripts.train_grpo as train_grpo
+
+        local_out = tmp_path / "CyberRott-v1.4-GRPO"
+        ckpt_100 = self._write_grpo_ckpt(local_out, step=100, epoch=0.2, max_steps=500, num_train_epochs=1)
+        state_path = ckpt_100 / "trainer_state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["train_batch_size"] = 2
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+
+        data_file = tmp_path / "train.jsonl"
+        data_file.write_text(
+            json.dumps({"messages": [{"role": "user", "content": "Analise CWE-79"}, {"role": "assistant", "content": "<think>ok</think>CWE-79"}]}) + "\n",
+            encoding="utf-8",
+        )
+
+        observed = {}
+
+        class FakeGRPOConfig:
+            def __init__(self, generation_batch_size=None, **kwargs):
+                self.generation_batch_size = generation_batch_size
+                for k, v in kwargs.items():
+                    setattr(self, k, v)
+
+        class FakeTrainer:
+            def __init__(self, **kwargs):
+                self.args = kwargs["args"]
+                self.model = MagicMock()
+                self.model_wrapped = None
+                self.generation_config = MagicMock()
+                # Simulate Trainer.__init__ caching _train_batch_size before resume
+                self._train_batch_size = 2
+
+            def add_callback(self, cb):
+                pass
+
+            def train(self, resume_from_checkpoint=None):
+                observed["resume_from_checkpoint"] = resume_from_checkpoint
+                observed["trainer_train_batch_size"] = self._train_batch_size
+                observed["trainer_args_bs"] = self.args.per_device_train_batch_size
+                observed["disk_train_batch_size"] = json.loads(state_path.read_text(encoding="utf-8"))["train_batch_size"]
+                return types.SimpleNamespace(metrics={"train_loss": 0.1})
+
+            def save_model(self, output_dir):
+                pass
+
+        fake_tokenizer = MagicMock()
+        fake_tokenizer.pad_token = "<|endoftext|>"
+        fake_tokenizer.eos_token = "<|endoftext|>"
+        fake_tokenizer.convert_tokens_to_ids.return_value = 1
+
+        fake_base_model = MagicMock()
+        fake_base_model.config = MagicMock()
+
+        fake_datasets_mod = types.ModuleType("datasets")
+        fake_datasets_mod.Dataset = types.SimpleNamespace(from_list=lambda recs: recs)
+        fake_transformers_mod = types.ModuleType("transformers")
+        fake_transformers_mod.AutoModelForCausalLM = types.SimpleNamespace(from_pretrained=lambda *a, **kw: fake_base_model)
+        fake_transformers_mod.AutoTokenizer = types.SimpleNamespace(from_pretrained=lambda *a, **kw: fake_tokenizer)
+        fake_peft_mod = types.ModuleType("peft")
+        fake_peft_mod.LoraConfig = MagicMock()
+        fake_peft_mod.TaskType = types.SimpleNamespace(CAUSAL_LM="CAUSAL_LM")
+        fake_peft_mod.PeftModel = MagicMock()
+        fake_trl_mod = types.ModuleType("trl")
+        fake_trl_mod.__version__ = "0.17.0"
+        fake_trl_mod.GRPOTrainer = FakeTrainer
+        fake_trl_mod.GRPOConfig = FakeGRPOConfig
+
+        monkeypatch.setitem(sys.modules, "datasets", fake_datasets_mod)
+        monkeypatch.setitem(sys.modules, "transformers", fake_transformers_mod)
+        monkeypatch.setitem(sys.modules, "peft", fake_peft_mod)
+        monkeypatch.setitem(sys.modules, "trl", fake_trl_mod)
+
+        monkeypatch.setattr(train_grpo, "apply_grpo_compatibility_patches", lambda: False)
+        monkeypatch.setattr(
+            train_grpo,
+            "setup_hardware_optimizations",
+            lambda _args: {
+                "cuda_available": False,
+                "device_name": "NVIDIA A100-SXM4-40GB",
+                "vram_gb": 40.0,
+                "compute_capability": "8.0",
+                "bf16_supported": True,
+                "tf32_enabled": False,
+            },
+        )
+        monkeypatch.setattr(
+            train_grpo,
+            "parse_and_curate_dataset",
+            lambda **kwargs: [{"prompt": [{"role": "user", "content": "Analise CWE-79"}], "reference_answer": "CWE-79"}],
+        )
+        monkeypatch.setattr(train_grpo, "DEFAULT_DRIVE_MOUNT", str(tmp_path / "unmounted_drive"))
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "train_grpo.py",
+                "--dataset_name",
+                str(data_file),
+                "--anchor_file",
+                str(tmp_path / "missing_anchor.jsonl"),
+                "--adapter_name_or_path",
+                str(tmp_path / "missing_sft"),
+                "--output_dir",
+                str(local_out),
+                "--per_device_train_batch_size",
+                "2",
+                "--max_completion_length",
+                "1536",
+                "--resume_from_checkpoint",
+                "auto",
+            ],
+        )
+
+        train_grpo.main()
+
+        assert observed["resume_from_checkpoint"] == str(ckpt_100)
+        assert observed["disk_train_batch_size"] == 1
+        assert observed["trainer_train_batch_size"] == 1
+        assert observed["trainer_args_bs"] == 1
 
 
 
