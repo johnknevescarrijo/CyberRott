@@ -21,10 +21,11 @@ Constrói 16 exemplos de alta densidade analítica cobrindo:
 16. Path Traversal e Local File Inclusion (PHP)
 """
 
+import argparse
 import json
 import os
 
-OUTPUT_JSONL = "/home/john/Programacao/Estudos/Machine_Learning/dataset_cyber/dataset_seguranca.jsonl"
+DEFAULT_OUTPUT_JSONL = os.path.join("data", "dataset_seguranca.jsonl")
 
 def get_all_samples():
     samples = []
@@ -253,7 +254,7 @@ def get_all_samples():
             "            or ip_obj.is_multicast\n"
             "            or ip_obj.is_reserved\n"
             "        ):\n"
-            "            raise SecurityError(f\"Acesso a endereco IP restrito negado: {ip_str}\")\n\n"
+            "            raise ValueError(f\"Acesso a endereco IP restrito negado: {ip_str}\")\n\n"
             "    # Requisicao com desativacao estrita de redirecionamentos\n"
             "    response = requests.get(target_url, timeout=5, allow_redirects=False)\n"
             "    return response.text\n"
@@ -705,13 +706,24 @@ def get_all_samples():
     return samples
 
 def main():
+    parser = argparse.ArgumentParser(description="Gerador de amostras complexas de cibersegurança para o CyberRott.")
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=DEFAULT_OUTPUT_JSONL,
+        help=f"Caminho do arquivo JSONL de saída (padrão: {DEFAULT_OUTPUT_JSONL}).",
+    )
+    args = parser.parse_args()
+
+    output_path = args.output
     samples = get_all_samples()
     print(f"[*] Construindo dataset com {len(samples)} amostras de alta densidade analitica...")
 
-    # Garante criacao do diretorio pai se necessario
-    os.makedirs(os.path.dirname(OUTPUT_JSONL), exist_ok=True)
+    parent_dir = os.path.dirname(os.path.abspath(output_path))
+    if parent_dir:
+        os.makedirs(parent_dir, exist_ok=True)
 
-    with open(OUTPUT_JSONL, "w", encoding="utf-8") as f:
+    with open(output_path, "w", encoding="utf-8") as f:
         for idx, sample in enumerate(samples, start=1):
             line = json.dumps(sample, ensure_ascii=False)
             f.write(line + "\n")
@@ -719,7 +731,7 @@ def main():
 
     print("=" * 60)
     print(f"[OK] Total de {len(samples)} amostras gravadas com sucesso em:")
-    print(f"     {OUTPUT_JSONL}")
+    print(f"     {output_path}")
     print("=" * 60)
 
 if __name__ == "__main__":

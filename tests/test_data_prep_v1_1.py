@@ -398,7 +398,7 @@ class TestPresetV14:
         try:
             base_file = os.path.join(temp_dir, "cyberrott_final_train.jsonl")
             with open(base_file, "w", encoding="utf-8") as f:
-                for i in range(2100):
+                for i in range(4005):
                     item = {
                         "messages": [
                             {"role": "user", "content": f"Security Prompt {i}"},
@@ -418,13 +418,66 @@ class TestPresetV14:
                     preset="v1.4",
                     output_file=base_file
                 )
-                assert len(result) >= 2100
+                assert len(result) >= 4005
                 first_local = [r for r in result if r.get("expected_cwe") == "CWE-89"][0]
                 assert first_local["expected_cwe"] == "CWE-89"
                 assert first_local["expected_mitre"] == "T1190"
                 assert "prm_ground_truth" in first_local
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_v14_min_reuse_requires_at_least_4000_samples(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            base_file = os.path.join(temp_dir, "cyberrott_final_train.jsonl")
+            with open(base_file, "w", encoding="utf-8") as f:
+                for i in range(2100):
+                    item = {
+                        "messages": [
+                            {"role": "user", "content": f"Prompt {i}"},
+                            {"role": "assistant", "content": f"<think>\nStep {i}\n</think>\n\nAns {i}"}
+                        ]
+                    }
+                    f.write(json.dumps(item) + "\n")
+
+            with patch("scripts.data_prep.fetch_multi_hf_datasets", return_value=[]) as mock_fetch:
+                prepare_dataset(
+                    anchor_file="data/dataset_cyber_ready.jsonl",
+                    anchor_repeat=1,
+                    preset="v1.4",
+                    output_file=base_file
+                )
+                called_keys = mock_fetch.call_args.kwargs.get("dataset_keys") or mock_fetch.call_args[0][0]
+                assert "goose_reason" in called_keys
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_prepare_dataset_goose_limit_does_not_mutate_global_catalog(self):
+        original_target = CYBERROTT_V1_1_DATASETS["goose_reason"]["target_samples"]
+        temp_dir = tempfile.mkdtemp()
+        try:
+            out_file = os.path.join(temp_dir, "out.jsonl")
+            with patch("scripts.data_prep.fetch_multi_hf_datasets", return_value=[]) as mock_fetch:
+                prepare_dataset(
+                    anchor_file="data/dataset_cyber_ready.jsonl",
+                    anchor_repeat=1,
+                    preset="v1.4",
+                    output_file=out_file,
+                    goose_limit=123,
+                )
+                assert CYBERROTT_V1_1_DATASETS["goose_reason"]["target_samples"] == original_target
+                limits_passed = mock_fetch.call_args.kwargs.get("custom_limits")
+                assert limits_passed["goose_reason"] == 123
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_no_hardcoded_home_paths_or_security_error(self):
+        for rel_path in ("scripts/generate_complex_samples.py", "scripts/prepare_dataset.py"):
+            with open(rel_path, "r", encoding="utf-8") as fh:
+                content = fh.read()
+            assert "/home/john/" not in content
+        with open("scripts/generate_complex_samples.py", "r", encoding="utf-8") as fh:
+            assert "SecurityError" not in fh.read()
 
 
 
