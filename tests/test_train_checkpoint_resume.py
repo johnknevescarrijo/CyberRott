@@ -107,6 +107,17 @@ class TestCLICheckpointArguments:
         assert args.save_total_limit == 3
         assert args.dry_run is True
 
+    def test_v1_4_preset_respects_explicit_overrides_and_no_dora(self):
+        args = train_colab.parse_args([
+            "--preset_v1_4",
+            "--lora_r", "16",
+            "--lora_alpha", "32",
+            "--no_dora",
+        ])
+        assert args.lora_r == 16
+        assert args.lora_alpha == 32
+        assert args.use_dora is False
+
 
 class TestCheckpointDetectionAndSorting:
     """Validate numeric checkpoint sorting and completion detection."""

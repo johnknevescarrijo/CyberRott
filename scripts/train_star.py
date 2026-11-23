@@ -20,6 +20,8 @@ import gc
 import re
 import json
 import time
+import shutil
+import tempfile
 import inspect
 import argparse
 from datetime import datetime
@@ -120,7 +122,7 @@ def parse_args(args_list: Optional[List[str]] = None):
         "--num_candidates", "--num-candidates",
         dest="num_candidates",
         type=int,
-        default=4,
+        default=None,
         help="Number N of exploratory trajectories generated per problem (default: 4, v1.4: 16)."
     )
     star_group.add_argument(
@@ -144,7 +146,7 @@ def parse_args(args_list: Optional[List[str]] = None):
     star_group.add_argument(
         "--max_new_tokens",
         type=int,
-        default=1024,
+        default=None,
         help="Maximum new tokens generated per exploratory trajectory."
     )
     star_group.add_argument(
@@ -235,13 +237,13 @@ def parse_args(args_list: Optional[List[str]] = None):
     model_group.add_argument(
         "--lora_r",
         type=int,
-        default=32,
+        default=None,
         help="LoRA rank (default: 32)."
     )
     model_group.add_argument(
         "--lora_alpha",
         type=int,
-        default=64,
+        default=None,
         help="LoRA alpha scaling factor (default: 64)."
     )
     model_group.add_argument(
@@ -258,9 +260,16 @@ def parse_args(args_list: Optional[List[str]] = None):
     )
     model_group.add_argument(
         "--use_dora",
+        dest="use_dora",
         action="store_true",
-        default=False,
+        default=None,
         help="Enable Weight-Decomposed Low-Rank Adaptation (DoRA) for enhanced capacity."
+    )
+    model_group.add_argument(
+        "--no_dora",
+        dest="use_dora",
+        action="store_false",
+        help="Explicitly disable DoRA even when --v1_4 / --preset_v1_4 is active."
     )
     model_group.add_argument(
         "--v1_4", "--v1.4", "--preset_v1_4",
@@ -329,17 +338,26 @@ def parse_args(args_list: Optional[List[str]] = None):
     )
 
     parsed = parser.parse_args(args_list)
+    if parsed.use_dora is None:
+        parsed.use_dora = bool(getattr(parsed, "v1_4", False))
     if getattr(parsed, "v1_4", False):
-        parsed.use_dora = True
         parsed.include_prm = True
-        if parsed.num_candidates == 4:
+        if parsed.num_candidates is None:
             parsed.num_candidates = 16
-        if parsed.lora_r == 32:
+        if parsed.lora_r is None:
             parsed.lora_r = 64
-        if parsed.lora_alpha == 64:
+        if parsed.lora_alpha is None:
             parsed.lora_alpha = 128
-        if parsed.max_new_tokens == 1024:
+        if parsed.max_new_tokens is None:
             parsed.max_new_tokens = 2048
+    if parsed.num_candidates is None:
+        parsed.num_candidates = 4
+    if parsed.lora_r is None:
+        parsed.lora_r = 32
+    if parsed.lora_alpha is None:
+        parsed.lora_alpha = 64
+    if parsed.max_new_tokens is None:
+        parsed.max_new_tokens = 1024
     if getattr(parsed, "backbone", None):
         cfg = resolve_backbone_config(parsed.backbone)
         if parsed.model_name_or_path == "microsoft/Phi-4-mini-instruct":
@@ -562,6 +580,7 @@ class RolloutGenerator:
         self._hf_model = None
         self._hf_tokenizer = None
         self._vllm_engine = None
+        self._merged_temp_dir: Optional[str] = None
 
         if self.backend != "mock":
             self._init_backend()
@@ -639,9 +658,63 @@ class RolloutGenerator:
                 from vllm import LLM
                 from transformers import AutoTokenizer
 
-                print(f"[vLLM] Loading tokenizer from {self.model_name_or_path}...")
+                vllm_model_path = self.model_name_or_path
+                adapter_cfg_file = os.path.join(self.model_name_or_path, "adapter_config.json")
+                has_full_model_cfg = os.path.isfile(os.path.join(self.model_name_or_path, "config.json"))
+                is_lora_checkpoint = os.path.isdir(self.model_name_or_path) and os.path.isfile(adapter_cfg_file) and not has_full_model_cfg
+                has_external_adapter = bool(self.adapter_path and os.path.exists(self.adapter_path))
+
+                if is_lora_checkpoint or has_external_adapter:
+                    from transformers import AutoModelForCausalLM
+                    from peft import PeftModel
+
+                    dtype = getattr(torch, self.torch_dtype)
+                    if is_lora_checkpoint:
+                        try:
+                            with open(adapter_cfg_file, "r", encoding="utf-8") as fh:
+                                cfg_data = json.load(fh)
+                            base_model_name = cfg_data.get("base_model_name_or_path", "microsoft/Phi-4-mini-instruct")
+                        except Exception:
+                            base_model_name = "microsoft/Phi-4-mini-instruct"
+                        adapter_to_merge = self.model_name_or_path
+                    else:
+                        base_model_name = self.model_name_or_path
+                        adapter_to_merge = self.adapter_path
+
+                    print(f"[vLLM] Pre-merging LoRA adapter '{adapter_to_merge}' into base '{base_model_name}'...")
+                    base_model = AutoModelForCausalLM.from_pretrained(
+                        base_model_name,
+                        torch_dtype=dtype,
+                        device_map="auto" if torch.cuda.is_available() else "cpu",
+                        trust_remote_code=False,
+                    )
+                    peft_m = PeftModel.from_pretrained(base_model, adapter_to_merge)
+                    merged_model = peft_m.merge_and_unload()
+                    if hasattr(merged_model, "peft_config"):
+                        delattr(merged_model, "peft_config")
+
+                    tok_src = (
+                        adapter_to_merge
+                        if os.path.exists(os.path.join(adapter_to_merge, "tokenizer_config.json"))
+                        else base_model_name
+                    )
+                    merge_tok = AutoTokenizer.from_pretrained(tok_src, trust_remote_code=False)
+                    if merge_tok.pad_token is None:
+                        merge_tok.pad_token = merge_tok.eos_token
+
+                    self._merged_temp_dir = tempfile.mkdtemp(prefix="star_vllm_merged_")
+                    merged_model.save_pretrained(self._merged_temp_dir, safe_serialization=True)
+                    merge_tok.save_pretrained(self._merged_temp_dir)
+
+                    del merged_model, peft_m, base_model, merge_tok
+                    gc.collect()
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    vllm_model_path = self._merged_temp_dir
+
+                print(f"[vLLM] Loading tokenizer from {vllm_model_path}...")
                 self.tokenizer = AutoTokenizer.from_pretrained(
-                    self.model_name_or_path,
+                    vllm_model_path,
                     trust_remote_code=False
                 )
                 if self.tokenizer.pad_token is None:
@@ -652,7 +725,7 @@ class RolloutGenerator:
                 gpu_util = 0.90 if total_mem >= 35.0 else 0.85
                 print(f"[vLLM] Initializing vLLM engine in {self.torch_dtype} (VRAM: {total_mem:.1f}GB, gpu_memory_utilization={gpu_util})...")
                 self.vllm_engine = LLM(
-                    model=self.model_name_or_path,
+                    model=vllm_model_path,
                     trust_remote_code=False,
                     dtype=self.torch_dtype,
                     max_model_len=4096,
@@ -662,6 +735,9 @@ class RolloutGenerator:
                 self._vllm_engine = self.vllm_engine
             except Exception as e:
                 print(f"[Warning] Failed to initialize vLLM ({e}). Falling back to 'hf' backend...")
+                if getattr(self, "_merged_temp_dir", None):
+                    shutil.rmtree(self._merged_temp_dir, ignore_errors=True)
+                    self._merged_temp_dir = None
                 self.backend = "hf"
                 self._init_hf()
 
@@ -681,6 +757,9 @@ class RolloutGenerator:
         self._hf_tokenizer = None
         self.vllm_engine = None
         self._vllm_engine = None
+        if getattr(self, "_merged_temp_dir", None):
+            shutil.rmtree(self._merged_temp_dir, ignore_errors=True)
+            self._merged_temp_dir = None
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -842,7 +921,7 @@ class RolloutGenerator:
             temperature=self.temperature,
             top_p=self.top_p,
             max_tokens=self.max_new_tokens,
-            stop=["<|im_end|>", "<|endoftext|>"]
+            stop=["<|end|>", "<|im_end|>", "<|endoftext|>"]
         )
 
         outputs = self.vllm_engine.generate(prompts, sampling_params)
@@ -1057,6 +1136,9 @@ def run_sft_update(
         )
         print(f"[STaR LoRA Update] Merging prior adapter from '{model_path}' via merge_and_unload()...")
         model = PeftModel.from_pretrained(base_model, model_path).merge_and_unload()
+        if hasattr(model, "peft_config"):
+            delattr(model, "peft_config")
+        del base_model
         tokenizer_source = (
             model_path
             if os.path.exists(os.path.join(model_path, "tokenizer_config.json"))
@@ -1074,6 +1156,8 @@ def run_sft_update(
         if adapter_path_prev and os.path.exists(adapter_path_prev) and adapter_path_prev != model_path:
             print(f"[STaR SFT Update] Merging additional prior adapter: {adapter_path_prev}")
             model = PeftModel.from_pretrained(model, adapter_path_prev).merge_and_unload()
+            if hasattr(model, "peft_config"):
+                delattr(model, "peft_config")
         tokenizer_source = model_path
 
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_source, trust_remote_code=False)

@@ -25,6 +25,7 @@ import json
 import time
 import shutil
 import signal
+import atexit
 import subprocess
 import urllib.request
 import argparse
@@ -998,12 +999,31 @@ def ensure_dataset_exists(file_path: str, fallback_url: str) -> str:
         if not os.path.exists(file_path):
             tmp_clone = "/tmp/cyberrott_git_clone"
             if not os.path.exists(tmp_clone):
-                os.system(f"git clone --depth 1 https://github.com/johnknevescarrijo/CyberRott.git {tmp_clone}")
-            repo_file = os.path.join(tmp_clone, file_path)
-            if os.path.exists(repo_file):
-                shutil.copyfile(repo_file, file_path)
-                print(f"[✓] File recovered via git clone: {file_path}")
-                return file_path
+                subprocess.run(
+                    [
+                        "git",
+                        "clone",
+                        "--depth",
+                        "1",
+                        "https://github.com/johnknevescarrijo/CyberRott.git",
+                        tmp_clone,
+                    ],
+                    check=False,
+                )
+            repo_candidates = []
+            if not os.path.isabs(file_path):
+                repo_candidates.append(os.path.join(tmp_clone, file_path))
+            repo_candidates.extend(
+                [
+                    os.path.join(tmp_clone, "data", os.path.basename(file_path)),
+                    os.path.join(tmp_clone, os.path.basename(file_path)),
+                ]
+            )
+            for repo_file in repo_candidates:
+                if os.path.exists(repo_file):
+                    shutil.copyfile(repo_file, file_path)
+                    print(f"[✓] File recovered via git clone: {file_path}")
+                    return file_path
 
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"Unable to locate or download dataset: {file_path}")
@@ -1289,7 +1309,19 @@ def ensure_vllm_server(
     ]
     try:
         log_file = open("vllm_server.log", "w", encoding="utf-8")
-        proc = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT)
+        try:
+            proc = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT)
+        finally:
+            log_file.close()
+
+        def _terminate_vllm_proc() -> None:
+            if proc.poll() is None:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+
+        atexit.register(_terminate_vllm_proc)
     except Exception as exc:
         print(f"[!] Falha ao iniciar processo em background do servidor vLLM: {exc}")
         return False
@@ -1603,7 +1635,7 @@ def parse_args(argv: Optional[List[str]] = None):
     data_group.add_argument(
         "--max_samples",
         type=int,
-        default=800,
+        default=None,
         help="Sample count curated by technical richness (default: 800; <=0 uses full corpus)."
     )
     data_group.add_argument(
@@ -1615,7 +1647,7 @@ def parse_args(argv: Optional[List[str]] = None):
     data_group.add_argument(
         "--max_completion_length",
         type=int,
-        default=1024,
+        default=None,
         help="Maximum generated rollout length in tokens (default: 1024)."
     )
 
@@ -1757,13 +1789,13 @@ def parse_args(argv: Optional[List[str]] = None):
     lora_group.add_argument(
         "--lora_r",
         type=int,
-        default=32,
+        default=None,
         help="LoRA rank for adaptation during GRPO (default: 32)."
     )
     lora_group.add_argument(
         "--lora_alpha",
         type=int,
-        default=64,
+        default=None,
         help="LoRA alpha scaling factor (default: 64)."
     )
     lora_group.add_argument(
@@ -1856,10 +1888,13 @@ def parse_args(argv: Optional[List[str]] = None):
         parsed.use_dora = bool(parsed.preset_v1_4)
 
     if parsed.preset_v1_4:
-        parsed.lora_r = 64
-        parsed.lora_alpha = 128
-        parsed.max_completion_length = 2048
-        if parsed.max_samples == 800:
+        if parsed.lora_r is None:
+            parsed.lora_r = 64
+        if parsed.lora_alpha is None:
+            parsed.lora_alpha = 128
+        if parsed.max_completion_length is None:
+            parsed.max_completion_length = 2048
+        if parsed.max_samples is None:
             parsed.max_samples = 4680
         parsed.include_prm = True
         if parsed.adapter_name_or_path == "./cyberrott_v1_1_sft_lora":
@@ -1875,8 +1910,17 @@ def parse_args(argv: Optional[List[str]] = None):
                     break
             parsed.adapter_name_or_path = resolved_v14 or "./CyberRott-v1.4-SFT-DoRA"
 
-    if parsed.full_scale:
+    if parsed.full_scale and parsed.max_samples is None:
         parsed.max_samples = 4680
+
+    if parsed.lora_r is None:
+        parsed.lora_r = 32
+    if parsed.lora_alpha is None:
+        parsed.lora_alpha = 64
+    if parsed.max_completion_length is None:
+        parsed.max_completion_length = 1024
+    if parsed.max_samples is None:
+        parsed.max_samples = 800
 
     if parsed.backbone:
         cfg = resolve_backbone_config(parsed.backbone)
@@ -1884,6 +1928,31 @@ def parse_args(argv: Optional[List[str]] = None):
             parsed.model_name_or_path = cfg["model_id"]
 
     return parsed
+
+
+def sync_dora_setting_with_checkpoint(args: argparse.Namespace, resume_checkpoint: Optional[str]) -> bool:
+    """Align args.use_dora with resume_checkpoint's adapter_config.json to avoid state/key mismatch on resume."""
+    if not resume_checkpoint:
+        return False
+    cfg_path = os.path.join(resume_checkpoint, "adapter_config.json")
+    if not os.path.isfile(cfg_path):
+        return False
+    try:
+        with open(cfg_path, "r", encoding="utf-8") as fh:
+            cfg_data = json.load(fh)
+    except Exception:
+        return False
+
+    ckpt_use_dora = bool(cfg_data.get("use_dora", False))
+    current_use_dora = bool(getattr(args, "use_dora", False))
+    if ckpt_use_dora != current_use_dora:
+        print(
+            f"[!] [Resume Safeguard] Mismatch de DoRA detectado entre args.use_dora={current_use_dora} "
+            f"e '{cfg_path}' (use_dora={ckpt_use_dora}). Ajustando args.use_dora={ckpt_use_dora} para retomar com segurança."
+        )
+        args.use_dora = ckpt_use_dora
+        return True
+    return False
 
 
 def main(args: Optional[argparse.Namespace] = None):
@@ -1991,6 +2060,12 @@ def main(args: Optional[argparse.Namespace] = None):
         start_merge = time.time()
         peft_sft = PeftModel.from_pretrained(base_model, adapter_path)
         base_model = peft_sft.merge_and_unload()
+        if hasattr(base_model, "peft_config"):
+            delattr(base_model, "peft_config")
+        del peft_sft
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         sft_merged = True
         print(f"[✓] Fusion completed in {time.time() - start_merge:.2f}s!")
         print("[✓] Model with SFT tradecraft now directly acts as reference policy π_ref!")
@@ -2004,6 +2079,7 @@ def main(args: Optional[argparse.Namespace] = None):
     resume_checkpoint = prepared.get("resume_checkpoint") or resolve_resume_checkpoint(
         args.resume_from_checkpoint, args.output_dir
     )
+    sync_dora_setting_with_checkpoint(args, resume_checkpoint)
     patch_checkpoint_batch_size(
         resume_checkpoint,
         args.per_device_train_batch_size,
@@ -2155,7 +2231,7 @@ def main(args: Optional[argparse.Namespace] = None):
         "warmup_ratio": args.warmup_ratio,
         "seed": args.seed,
         "fp16": (args.torch_dtype == "float16"),
-        "bf16": (args.torch_dtype == "bfloat16"),
+        "bf16": (args.torch_dtype == "bfloat16" and torch.cuda.is_available() and torch.cuda.is_bf16_supported()),
         "gradient_checkpointing": use_gc,
         "push_to_hub": args.push_to_hub,
         "hub_model_id": args.hub_model_id,
