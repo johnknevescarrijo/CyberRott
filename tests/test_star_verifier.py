@@ -331,6 +331,51 @@ def test_analytical_7_stages_and_star_verifier_methods():
     ranked = verifier.rank_candidates({"answer": "A"}, [cand], use_prm=True)
     assert len(ranked) == 1
 
+
+def test_prm_stages_coverage_does_not_double_count_aliases():
+    from scripts.star_verifier import ANALYTICAL_7_STAGES, CANONICAL_ANALYTICAL_7_STAGES
+
+    # Aliases permanecem acessíveis para retrocompatibilidade
+    assert "attack_surface" in ANALYTICAL_7_STAGES
+    assert "taint_analysis" in ANALYTICAL_7_STAGES
+    assert "exploit_feasibility" in ANALYTICAL_7_STAGES
+    assert len(CANONICAL_ANALYTICAL_7_STAGES) == 7
+
+    # Candidato cobrindo todos os 7 estágios -> exatamente 7 estágios (não 10)
+    full_7_cand = (
+        "<think>\n"
+        "1. Attack surface enumeration on the HTTP endpoint.\n"
+        "2. Taint analysis tracks user data flow to the query.\n"
+        "3. Dangerous sink detected in database execution.\n"
+        "4. Defensive mitigation and sanitization are absent.\n"
+        "5. Taxonomic classification maps to CWE-89.\n"
+        "6. Exploit feasibility is high; distractor options are eliminated.\n"
+        "7. Defensive remediation: apply parameterized queries.\n"
+        "</think>\n\n"
+        "Resposta Final: [A]"
+    )
+    res_full = verify_prm_steps(full_7_cand)
+    assert len(res_full["stages_covered"]) == 7
+    assert 0.0 <= res_full["prm_score"] <= 1.0
+
+    # Candidato cobrindo apenas os 3 estágios com aliases -> exatamente 3 estágios (não 6)
+    only_aliased_3_cand = (
+        "<think>\n"
+        "1. Attack surface exposure at the entry point.\n"
+        "2. Taint analysis shows parameter propagation.\n"
+        "3. Exploit feasibility is confirmed with high severity.\n"
+        "</think>\n\n"
+        "Resposta Final: [A]"
+    )
+    res_3 = verify_prm_steps(only_aliased_3_cand)
+    assert len(res_3["stages_covered"]) == 3
+    assert set(res_3["stages_covered"]) == {
+        "surface_enumeration",
+        "taint_data_flow",
+        "exploit_feasibility_distractors",
+    }
+    assert 0.0 <= res_3["prm_score"] <= 1.0
+
 if __name__ == "__main__":
     test_refusal_detection()
     test_think_format_integrity()
