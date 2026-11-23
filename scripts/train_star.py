@@ -38,120 +38,20 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 os.environ["WANDB_DISABLED"] = "true"
 
 
-# Backbone Scaling Catalog (v1.4)
-SUPPORTED_BACKBONES: Dict[str, Dict[str, Any]] = {
-    "phi4-mini": {
-        "model_id": "microsoft/Phi-4-mini-instruct",
-        "target_modules": "all-linear",
-        "stop_tokens": ["<|end|>", "<|endoftext|>"],
-        "default_max_seq_length": 4096,
-        "description": "Microsoft Phi-4-mini (3.82B) dense reasoning architecture",
-    },
-    "qwen2.5-coder-7b": {
-        "model_id": "Qwen/Qwen2.5-Coder-7B-Instruct",
-        "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
-        "stop_tokens": ["<|im_end|>", "<|endoftext|>"],
-        "default_max_seq_length": 4096,
-        "description": "Qwen 2.5 Coder 7B Instruct specialized in code audit & reversing",
-    },
-    "phi4-14b": {
-        "model_id": "microsoft/Phi-4",
-        "target_modules": "all-linear",
-        "stop_tokens": ["<|im_end|>", "<|end|>", "<|endoftext|>"],
-        "default_max_seq_length": 4096,
-        "description": "Microsoft Phi-4 14B deep deductive reasoning model",
-    },
-}
-
-
-def resolve_backbone_config(backbone_or_model: str) -> Dict[str, Any]:
-    """Resolve a chave de backbone ou ID de modelo Hugging Face para a configuração canônica."""
-    if not backbone_or_model:
-        return SUPPORTED_BACKBONES["phi4-mini"]
-    key = backbone_or_model.lower().strip()
-    if key in SUPPORTED_BACKBONES:
-        return SUPPORTED_BACKBONES[key]
-    for b_key, b_cfg in SUPPORTED_BACKBONES.items():
-        if b_cfg["model_id"].lower() == key:
-            return b_cfg
-    return {
-        "model_id": backbone_or_model,
-        "target_modules": "all-linear",
-        "stop_tokens": ["<|end|>", "<|endoftext|>", "<|im_end|>"],
-        "default_max_seq_length": 4096,
-        "description": f"Custom architecture: {backbone_or_model}",
-    }
-
-
-def build_lora_config(
-    r: int = 32,
-    lora_alpha: int = 64,
-    lora_dropout: float = 0.05,
-    target_modules: Any = "all-linear",
-    use_dora: bool = False,
-    bias: str = "none",
-    task_type: Any = None,
-) -> Any:
-    """Instancia LoraConfig com suporte transparente a DoRA e target modules flexíveis."""
-    from peft import LoraConfig, TaskType
-    t_type = task_type if task_type is not None else TaskType.CAUSAL_LM
-    lora_kwargs = {
-        "r": r,
-        "lora_alpha": lora_alpha,
-        "lora_dropout": lora_dropout,
-        "target_modules": target_modules,
-        "bias": bias,
-        "task_type": t_type,
-    }
-    if use_dora:
-        sig = inspect.signature(LoraConfig.__init__).parameters
-        if "use_dora" in sig:
-            lora_kwargs["use_dora"] = True
-    return LoraConfig(**lora_kwargs)
-
-
-def setup_hardware_optimizations(args: Optional[argparse.Namespace] = None) -> Dict[str, Any]:
-    """
-    Detects and applies modern hardware accelerations for modern GPUs (A100, H100, L4):
-    - TF32 across cuDNN and matmul (up to 3x tensor throughput without precision loss)
-    - Preserves micro-batch at 2 and grad_accum at 8 (due to Phi-4's 200k vocabulary)
-    - Automatic detection and preference for FlashAttention-2
-    """
-    profile: Dict[str, Any] = {
-        "device_name": "CPU",
-        "vram_gb": 0.0,
-        "is_ampere_or_newer": False,
-        "is_high_vram": False,
-        "recommended_attn": "sdpa",
-    }
-    if not torch.cuda.is_available():
-        return profile
-
-    torch.backends.cuda.matmul.allow_tf32 = True
-    torch.backends.cudnn.allow_tf32 = True
-
-    device_name = torch.cuda.get_device_name(0)
-    total_vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
-    major, _ = torch.cuda.get_device_capability(0)
-
-    profile["device_name"] = device_name
-    profile["vram_gb"] = round(total_vram_gb, 1)
-    profile["is_ampere_or_newer"] = (major >= 8)
-    profile["is_high_vram"] = (total_vram_gb >= 35.0)  # A100 40GB/80GB, H100 80GB
-
-    try:
-        import flash_attn  # noqa: F401
-        profile["recommended_attn"] = "flash_attention_2"
-    except ImportError:
-        profile["recommended_attn"] = "sdpa"
-
-    if args is not None and getattr(args, "auto_optimize", True):
-        if profile["is_high_vram"]:
-            if args.attn_implementation == "sdpa" and profile["recommended_attn"] == "flash_attention_2":
-                args.attn_implementation = "flash_attention_2"
-                print("[A100 Auto-Optimization] Automatically activated 'flash_attention_2'.")
-
-    return profile
+try:
+    from scripts.common import (
+        SUPPORTED_BACKBONES,
+        resolve_backbone_config,
+        build_lora_config,
+        setup_hardware_optimizations,
+    )
+except ImportError:
+    from common import (
+        SUPPORTED_BACKBONES,
+        resolve_backbone_config,
+        build_lora_config,
+        setup_hardware_optimizations,
+    )
 
 
 # ==============================================================================

@@ -35,37 +35,10 @@ except Exception:
 from peft import PeftModel
 import json
 
-# Backbone Scaling Catalog (v1.4)
-SUPPORTED_BACKBONES = {
-    "phi4-mini": {
-        "model_id": "microsoft/Phi-4-mini-instruct",
-        "description": "Microsoft Phi-4-mini (3.82B) dense reasoning architecture",
-    },
-    "qwen2.5-coder-7b": {
-        "model_id": "Qwen/Qwen2.5-Coder-7B-Instruct",
-        "description": "Qwen 2.5 Coder 7B Instruct specialized in code audit & reversing",
-    },
-    "phi4-14b": {
-        "model_id": "microsoft/Phi-4",
-        "description": "Microsoft Phi-4 14B deep deductive reasoning model",
-    },
-}
-
-
-def resolve_backbone_config(backbone_or_model: str):
-    """Resolve a chave de backbone ou ID de modelo Hugging Face para a configuração canônica."""
-    if not backbone_or_model:
-        return SUPPORTED_BACKBONES["phi4-mini"]
-    key = backbone_or_model.lower().strip()
-    if key in SUPPORTED_BACKBONES:
-        return SUPPORTED_BACKBONES[key]
-    for b_key, b_cfg in SUPPORTED_BACKBONES.items():
-        if b_cfg["model_id"].lower() == key:
-            return b_cfg
-    return {
-        "model_id": backbone_or_model,
-        "description": f"Custom architecture: {backbone_or_model}",
-    }
+try:
+    from scripts.common import SUPPORTED_BACKBONES, resolve_backbone_config
+except ImportError:
+    from common import SUPPORTED_BACKBONES, resolve_backbone_config
 
 
 def resolve_adapter_path(path: str) -> str:
