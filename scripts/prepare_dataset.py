@@ -3,14 +3,17 @@ Script utilitário para validar, corrigir e converter os dados destilados do GLM
 para o formato oficial de conversação (ChatML / Phi-4 Template).
 """
 
+import argparse
 import json
 import os
-import glob
-from typing import List, Dict
+
+DEFAULT_INPUT_PATH = os.path.join("data", "dataset_seguranca.jsonl")
+DEFAULT_OUTPUT_PATH = os.path.join("data", "dataset_cyber_ready.jsonl")
+
 
 def convert_and_validate(
-    input_path: str = "/home/john/Programacao/Estudos/Machine_Learning/dataset_cyber/dataset_seguranca.jsonl",
-    output_path: str = "./dataset_cyber_ready.jsonl"
+    input_path: str = DEFAULT_INPUT_PATH,
+    output_path: str = DEFAULT_OUTPUT_PATH,
 ):
     if not os.path.exists(input_path):
         print(f"[Erro] Arquivo de entrada não encontrado: {input_path}")
@@ -80,4 +83,8 @@ def convert_and_validate(
     print("=" * 60)
 
 if __name__ == "__main__":
-    convert_and_validate()
+    parser = argparse.ArgumentParser(description="Converte e valida dataset para o formato oficial CyberRott.")
+    parser.add_argument("--input", type=str, default=DEFAULT_INPUT_PATH, help=f"Arquivo JSONL de entrada (padrão: {DEFAULT_INPUT_PATH}).")
+    parser.add_argument("--output", type=str, default=DEFAULT_OUTPUT_PATH, help=f"Arquivo JSONL de saída (padrão: {DEFAULT_OUTPUT_PATH}).")
+    args = parser.parse_args()
+    convert_and_validate(input_path=args.input, output_path=args.output)

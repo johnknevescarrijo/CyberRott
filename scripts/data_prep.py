@@ -726,9 +726,13 @@ def fetch_multi_hf_datasets(
 # 9. DATASET CATALOG DISPLAY CLI (--list_datasets)
 # =============================================================================
 
-def print_dataset_catalog():
+def print_dataset_catalog(custom_limits: Optional[Dict[str, int]] = None):
     """Prints descriptive table of the official Zero-API Cost dataset catalog."""
-    total_target = sum(cfg["target_samples"] for cfg in CYBERROTT_V1_1_DATASETS.values())
+    limits = custom_limits or {}
+    total_target = sum(
+        limits.get(key, cfg["target_samples"])
+        for key, cfg in CYBERROTT_V1_1_DATASETS.items()
+    )
     header = "=" * 105
     print("\n" + header)
     print("🛡️  CYBERROTT 1.1 - CATÁLOGO OFICIAL DE DATASETS ZERO-API COST (OFFICIAL DATASET CATALOG)")
@@ -737,7 +741,8 @@ def print_dataset_catalog():
     print("-" * 105)
     for key, cfg in CYBERROTT_V1_1_DATASETS.items():
         filter_str = "Yes" if cfg["requires_cyber_filter"] else "No (Native)"
-        print(f"{key:<16} {cfg['repo_id']:<44} {cfg['target_samples']:<14} {filter_str:<14} {cfg['domain']}")
+        target_val = limits.get(key, cfg["target_samples"])
+        print(f"{key:<16} {cfg['repo_id']:<44} {target_val:<14} {filter_str:<14} {cfg['domain']}")
     print("-" * 105)
     print(f"TOTAL ALVO EXTERNO: ~{total_target:,} high-density analytical sequences.")
     print(f"TOTAL WITH GOLD ANCHORS: ~{total_target + 320:,} sequences (balanced high-density dataset).")
@@ -770,9 +775,6 @@ def prepare_dataset(
     - Deterministic deduplication with Golden Anchor preservation.
     - Shuffling and export to target JSONL file.
     """
-    if goose_limit is not None:
-        CYBERROTT_V1_1_DATASETS["goose_reason"]["target_samples"] = goose_limit
-
     if not os.path.exists(anchor_file):
         fallback_candidate = os.path.join("data", anchor_file)
         if os.path.exists(fallback_candidate):
@@ -828,7 +830,7 @@ def prepare_dataset(
                 temp_samples = []
 
             min_reuse = 2000 if preset == "v1.1" else 4000
-            if len(temp_samples) >= min_reuse or (preset == "v1.4" and len(temp_samples) >= 2000):
+            if len(temp_samples) >= min_reuse:
                 reusing_local_v1 = True
                 print(
                     f"[✓] Local {preset} base detected ({len(temp_samples)} samples)! "
@@ -868,7 +870,11 @@ def prepare_dataset(
             print(f"[*] Mode {preset} Active: Processing {len(active_keys)} datasets from catalog...")
 
         if active_keys:
-            custom_limits = PRESET_V1_4_TARGETS if preset == "v1.4" else None
+            custom_limits: Optional[Dict[str, int]] = dict(PRESET_V1_4_TARGETS) if preset == "v1.4" else None
+            if goose_limit is not None:
+                if custom_limits is None:
+                    custom_limits = {}
+                custom_limits["goose_reason"] = goose_limit
             hf_samples = fetch_multi_hf_datasets(
                 dataset_keys=active_keys,
                 cyber_regex=cyber_regex,
@@ -1022,11 +1028,9 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    if args.goose_limit is not None:
-        CYBERROTT_V1_1_DATASETS["goose_reason"]["target_samples"] = args.goose_limit
-
     if args.list_datasets:
-        print_dataset_catalog()
+        cli_limits = {"goose_reason": args.goose_limit} if args.goose_limit is not None else None
+        print_dataset_catalog(custom_limits=cli_limits)
         sys.exit(0)
 
     prepare_dataset(
