@@ -306,3 +306,128 @@ class TestColabNotebookIntegrity:
         c12_text = "".join(notebook_data["cells"][12]["source"])
         assert ("--model_name ./CyberRott-v1.4-GRPO" in c12_text or "--model_name ./CyberRott-v1.3-GRPO" in c12_text)
         assert "johnknevescarrijo/CyberRott-v1.2-GRPO" not in c12_text
+
+
+class TestEvalMergeExportFixes:
+    """Valida correções da Feature 4 em eval_wmdp_vllm, merge_lora, export_gguf e upload_to_hf."""
+
+    def test_resolve_model_or_adapter_path_respects_explicit_local_path_first(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        # Cria candidato prioritário ./CyberRott-v1.4-GRPO e um modelo explícito ./meu-modelo-CyberRott-v1.3
+        prio_dir = tmp_path / "CyberRott-v1.4-GRPO"
+        prio_dir.mkdir()
+        (prio_dir / "adapter_config.json").write_text("{}", encoding="utf-8")
+
+        explicit_dir = tmp_path / "meu-modelo-CyberRott-v1.3"
+        explicit_dir.mkdir()
+        (explicit_dir / "config.json").write_text("{}", encoding="utf-8")
+
+        resolved_model, _, _ = resolve_model_or_adapter_path("./meu-modelo-CyberRott-v1.3")
+        assert resolved_model == os.path.abspath(str(explicit_dir))
+
+    def test_eval_main_handles_zero_questions_and_writes_versioned_latest(self, tmp_path, monkeypatch):
+        import types
+        from unittest.mock import MagicMock
+        import scripts.eval_wmdp_vllm as eval_mod
+
+        model_dir = tmp_path / "CyberRott-v1.4-Standalone"
+        model_dir.mkdir()
+        (model_dir / "config.json").write_text("{}", encoding="utf-8")
+
+        out_dir = tmp_path / "eval_out"
+
+        class FakeLLM:
+            def __init__(self, **kwargs):
+                pass
+
+            def generate(self, prompts, sampling_params):
+                return []
+
+        fake_vllm = types.ModuleType("vllm")
+        fake_vllm.LLM = FakeLLM
+        fake_vllm.SamplingParams = MagicMock()
+
+        fake_datasets = types.ModuleType("datasets")
+        fake_datasets.load_dataset = lambda *a, **kw: []
+
+        fake_tok = MagicMock()
+        fake_tok.apply_chat_template.return_value = "prompt"
+        fake_transformers = types.ModuleType("transformers")
+        fake_transformers.AutoTokenizer = types.SimpleNamespace(from_pretrained=lambda *a, **kw: fake_tok)
+
+        monkeypatch.setitem(sys.modules, "vllm", fake_vllm)
+        monkeypatch.setattr(eval_mod, "load_dataset", lambda *a, **kw: [])
+        monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "eval_wmdp_vllm.py",
+                "--model_name",
+                str(model_dir),
+                "--output_dir",
+                str(out_dir),
+            ],
+        )
+
+        eval_mod.main()
+
+        summary = json.loads((out_dir / "latest_summaryv1.4.json").read_text(encoding="utf-8"))
+        assert summary["total_questions"] == 0
+        assert summary["accuracy"] == 0.0
+        assert summary["stderr"] == 0.0
+        assert (out_dir / "latest_full_resultsv1.4.json").exists()
+
+    def test_merge_lora_no_silent_fallback_and_raises_file_not_found(self, tmp_path):
+        from scripts.merge_lora import merge_and_save
+
+        missing = str(tmp_path / "does_not_exist")
+        assert resolve_adapter_path(missing) is None
+
+        with pytest.raises(FileNotFoundError):
+            merge_and_save("microsoft/Phi-4-mini-instruct", missing, str(tmp_path / "out"))
+
+        valid_adapter = tmp_path / "valid_adapter"
+        valid_adapter.mkdir()
+        (valid_adapter / "adapter_config.json").write_text("{}", encoding="utf-8")
+        with pytest.raises(FileNotFoundError):
+            merge_and_save(
+                "microsoft/Phi-4-mini-instruct",
+                str(valid_adapter),
+                str(tmp_path / "out"),
+                sft_adapter_path=missing,
+            )
+
+    def test_export_gguf_build_modelfile_content_and_run_cmd_no_shell(self, monkeypatch):
+        from types import SimpleNamespace
+        from scripts.export_gguf import build_modelfile_content, run_cmd
+
+        phi4_mf = build_modelfile_content("model.gguf", base_model="microsoft/Phi-4-mini-instruct")
+        assert "<|system|>" in phi4_mf
+        assert "<|user|>" in phi4_mf
+        assert "<|assistant|>" in phi4_mf
+        assert '<|end|>' in phi4_mf
+        assert 'PARAMETER stop "<|end|>"' in phi4_mf
+
+        qwen_mf = build_modelfile_content("model.gguf", base_model="Qwen/Qwen2.5-Coder-7B-Instruct")
+        assert "<|im_start|>system" in qwen_mf
+        assert "<|im_end|>" in qwen_mf
+
+        observed = {}
+
+        def fake_run(cmd, **kwargs):
+            observed["cmd"] = cmd
+            observed["shell"] = kwargs.get("shell")
+            return SimpleNamespace(returncode=0)
+
+        monkeypatch.setattr("scripts.export_gguf.subprocess.run", fake_run)
+        run_cmd(["echo", "ok"], "Test")
+        assert observed["cmd"] == ["echo", "ok"]
+        assert observed["shell"] is False
+
+    def test_upload_to_hf_v14_fallback(self, tmp_path, monkeypatch):
+        from scripts.upload_to_hf import DEFAULT_REPO_NAME, resolve_model_folder
+
+        monkeypatch.chdir(tmp_path)
+        assert DEFAULT_REPO_NAME == "CyberRott-v1.4-GRPO"
+        assert resolve_model_folder(None) == "./CyberRott-v1.4-Standalone"
