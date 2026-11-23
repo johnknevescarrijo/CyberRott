@@ -187,13 +187,13 @@ def parse_args(argv: Optional[List[str]] = None):
     lora_group.add_argument(
         "--lora_r",
         type=int,
-        default=32,
+        default=None,
         help="LoRA rank dimension (default: 32)."
     )
     lora_group.add_argument(
         "--lora_alpha",
         type=int,
-        default=64,
+        default=None,
         help="LoRA alpha scaling factor (default: 64, typically 2x rank)."
     )
     lora_group.add_argument(
@@ -213,9 +213,16 @@ def parse_args(argv: Optional[List[str]] = None):
     )
     lora_group.add_argument(
         "--use_dora",
+        dest="use_dora",
         action="store_true",
-        default=False,
+        default=None,
         help="Enable Weight-Decomposed Low-Rank Adaptation (DoRA) for enhanced capacity."
+    )
+    lora_group.add_argument(
+        "--no_dora",
+        dest="use_dora",
+        action="store_false",
+        help="Explicitly disable DoRA even when --preset_v1_4 is active."
     )
     lora_group.add_argument(
         "--preset_v1_4", "--v1_4", "--v1.4",
@@ -333,10 +340,17 @@ def parse_args(argv: Optional[List[str]] = None):
     )
 
     parsed = parser.parse_args(argv)
+    if parsed.use_dora is None:
+        parsed.use_dora = bool(parsed.preset_v1_4)
     if parsed.preset_v1_4:
-        parsed.use_dora = True
-        parsed.lora_r = 64
-        parsed.lora_alpha = 128
+        if parsed.lora_r is None:
+            parsed.lora_r = 64
+        if parsed.lora_alpha is None:
+            parsed.lora_alpha = 128
+    if parsed.lora_r is None:
+        parsed.lora_r = 32
+    if parsed.lora_alpha is None:
+        parsed.lora_alpha = 64
     if parsed.backbone:
         cfg = resolve_backbone_config(parsed.backbone)
         if parsed.model_name_or_path == "microsoft/Phi-4-mini-instruct":
@@ -485,7 +499,7 @@ def train(args: Optional[argparse.Namespace] = None) -> Dict[str, Any]:
         "lr_scheduler_type": args.lr_scheduler_type,
         "logging_steps": args.logging_steps,
         "save_strategy": args.save_strategy,
-        "bf16": (args.torch_dtype == "bfloat16" and torch.cuda.is_bf16_supported()),
+        "bf16": (args.torch_dtype == "bfloat16" and torch.cuda.is_available() and torch.cuda.is_bf16_supported()),
         "fp16": (args.torch_dtype == "float16"),
         "optim": args.optim,
         "dataloader_num_workers": 2 if torch.cuda.is_available() else 0,
