@@ -182,6 +182,9 @@ ANALYTICAL_7_STAGES = {
     },
 }
 
+# Coleção canônica estrita dos 7 estágios (sem aliases duplicados)
+CANONICAL_ANALYTICAL_7_STAGES = dict(ANALYTICAL_7_STAGES)
+
 # Aliases diretos para acesso por chaves canônicas v1.4
 ANALYTICAL_7_STAGES["attack_surface"] = ANALYTICAL_7_STAGES["surface_enumeration"]
 ANALYTICAL_7_STAGES["taint_analysis"] = ANALYTICAL_7_STAGES["taint_data_flow"]
@@ -366,9 +369,9 @@ def verify_prm_steps(response: str, prompt: str = "") -> Dict[str, Any]:
             step_scores.append(0.0)
             continue
 
-        # a) Checagem de estágios analíticos v1.4 ou análise de alternativas
+        # a) Checagem de estágios analíticos v1.4 (apenas sobre os 7 estágios canônicos)
         step_covered_any = False
-        for stage_id, stage_data in CYBERROTT_V14_STAGES.items():
+        for stage_id, stage_data in CANONICAL_ANALYTICAL_7_STAGES.items():
             for pat in stage_data["patterns"]:
                 if pat.search(step_clean):
                     stages_covered_set.add(stage_id)
@@ -397,7 +400,7 @@ def verify_prm_steps(response: str, prompt: str = "") -> Dict[str, Any]:
 
     # 6. Agregação do PRM Score Global
     stages_list = sorted(list(stages_covered_set))
-    stages_coverage = len(stages_list) / 7.0
+    stages_coverage = min(1.0, len(stages_list) / 7.0)
 
     mean_step_score = (sum(step_scores) / num_steps) if num_steps > 0 else 0.0
 
