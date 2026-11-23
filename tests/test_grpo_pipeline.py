@@ -1118,12 +1118,24 @@ class TestGRPOVramSafeguards:
         ancestor_pid = 999991
         protected_set = {self_pid, parent_pid, ancestor_pid}
 
+        ps_map = {
+            "23116": "python -m trl.scripts.vllm_serve --port 8000",
+            "24501": "VLLM::EngineCore",
+            "25001": "/usr/local/bin/ollama serve",
+            "25002": "python other_job.py",
+        }
+
         def fake_run(cmd, **kwargs):
             if cmd[0] == "nvidia-smi":
                 return SimpleNamespace(
                     returncode=0,
-                    stdout=f"23116\n{self_pid}\n{parent_pid}\n{ancestor_pid}\n24501\n",
+                    stdout=f"23116\n{self_pid}\n{parent_pid}\n{ancestor_pid}\n25001\n25002\n24501\n",
                 )
+            if cmd[0] == "ps":
+                pid_str = cmd[2]
+                if pid_str in ps_map:
+                    return SimpleNamespace(returncode=0, stdout=ps_map[pid_str] + "\n")
+                return SimpleNamespace(returncode=1, stdout="")
             return SimpleNamespace(returncode=1, stdout="")
 
         mock_kill = MagicMock()
@@ -1146,6 +1158,8 @@ class TestGRPOVramSafeguards:
         assert (23116, signal.SIGKILL) in killed_args
         assert (24501, signal.SIGKILL) in killed_args
         killed_pids = {pid for pid, _ in killed_args}
+        assert 25001 not in killed_pids
+        assert 25002 not in killed_pids
         assert self_pid not in killed_pids
         assert parent_pid not in killed_pids
         assert ancestor_pid not in killed_pids
