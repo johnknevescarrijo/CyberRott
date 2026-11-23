@@ -42,37 +42,15 @@ except ImportError:
 
 
 def resolve_adapter_path(path: str) -> str:
-    """Resolves adapter directory by inspecting direct paths, subdirectories, and candidate locations."""
-    if not path:
+    """Resolves adapter directory by inspecting direct paths and subdirectories."""
+    if not path or not os.path.exists(path):
         return None
     if os.path.exists(os.path.join(path, "adapter_config.json")):
         return path
-    if os.path.exists(path) and os.path.isdir(path):
+    if os.path.isdir(path):
         for root, _, files in os.walk(path):
             if "adapter_config.json" in files:
                 return root
-    # Common default candidates in Google Colab / local workspaces
-    candidates = [
-        "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott-v1.4-GRPO",
-        "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_4_GRPO",
-        "./CyberRott-v1.4-GRPO",
-        "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott-v1.4-SFT-DoRA",
-        "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_4_SFT_DoRA",
-        "./CyberRott-v1.4-SFT-DoRA",
-        "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott-v1.3-GRPO",
-        "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_3_GRPO",
-        "./CyberRott-v1.3-GRPO",
-        "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott-v1.2-GRPO",
-        "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_2_GRPO",
-        "./CyberRott-v1.2-GRPO",
-        "/content/drive/MyDrive/CyberRott_Checkpoints/cyberrott_v1_1_sft_lora",
-        "/content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_1_Final",
-        "./cyberrott_v1_1_sft_lora",
-        "./CyberRott-v1.1-Final",
-    ]
-    for c in candidates:
-        if os.path.exists(os.path.join(c, "adapter_config.json")):
-            return c
     return None
 
 
@@ -85,8 +63,19 @@ def merge_and_save(
 ):
     dtype = getattr(torch, torch_dtype)
 
-    resolved_sft = resolve_adapter_path(sft_adapter_path)
-    resolved_final = resolve_adapter_path(adapter_path) or adapter_path
+    resolved_sft = None
+    if sft_adapter_path:
+        resolved_sft = resolve_adapter_path(sft_adapter_path)
+        if not resolved_sft:
+            raise FileNotFoundError(
+                f"SFT adapter not found or missing adapter_config.json: '{sft_adapter_path}'"
+            )
+
+    resolved_final = resolve_adapter_path(adapter_path)
+    if not resolved_final or not os.path.exists(os.path.join(resolved_final, "adapter_config.json")):
+        raise FileNotFoundError(
+            f"Adapter not found or missing adapter_config.json: '{adapter_path}'"
+        )
 
     print("=" * 60)
     print("CyberRott - LoRA Adapter Fusion (Merge & Unload)")

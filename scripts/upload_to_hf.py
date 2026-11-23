@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-CyberRott (v1.3 GRPO) Hugging Face Hub Publication Pipeline.
+CyberRott (v1.4 GRPO) Hugging Face Hub Publication Pipeline.
 ============================================================
 Creates the repository if it does not exist, copies MODEL_CARD.md as the official
 README.md, and uploads safetensors weights and/or GGUF files with resumable upload support.
@@ -100,7 +100,7 @@ def resolve_model_folder(specified_folder: Optional[str] = None) -> str:
                 return candidate
 
     # Default fallback
-    fallback = "./CyberRott-v1.3-Standalone"
+    fallback = "./CyberRott-v1.4-Standalone"
     print(f"[*] No pre-existing weight directory found. Using default fallback: {fallback}")
     return fallback
 
@@ -149,7 +149,7 @@ def upload_model(
     full_repo_id = f"{username}/{repo_name}"
     
     print("=" * 65)
-    print("🛡️  CyberRott v1.3 GRPO — Publication to Hugging Face Hub")
+    print("🛡️  CyberRott v1.4 GRPO — Publication to Hugging Face Hub")
     print(f"Authenticated User: {username}")
     print(f"Target Repository:  https://huggingface.co/{full_repo_id}")
     if readme_only:
@@ -232,7 +232,7 @@ def upload_model(
     )
 
     print("\n" + "=" * 65)
-    print("🎉 SUCCESS! CyberRott v1.3 GRPO is published on the Hugging Face Hub!")
+    print("🎉 SUCCESS! CyberRott v1.4 GRPO is published on the Hugging Face Hub!")
     print(f"Repository URL: https://huggingface.co/{full_repo_id}")
     print("Recommended inference commands:")
     print(f"   • Transformers / vLLM: vllm serve {full_repo_id}")
@@ -241,8 +241,8 @@ def upload_model(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Upload CyberRott v1.3 to the Hugging Face Hub")
-    parser.add_argument("--repo_name", default=DEFAULT_REPO_NAME, help="Hugging Face repository name (default: CyberRott-v1.3-GRPO)")
+    parser = argparse.ArgumentParser(description="Upload CyberRott v1.4 to the Hugging Face Hub")
+    parser.add_argument("--repo_name", default=DEFAULT_REPO_NAME, help="Hugging Face repository name (default: CyberRott-v1.4-GRPO)")
     parser.add_argument("--folder", default=None, help="Directory containing standalone weights (auto-resolved if omitted)")
     parser.add_argument("--gguf", default=None, help="GGUF binary file to include in the repository (optional)")
     parser.add_argument("--model_card", default="./MODEL_CARD.md", help="Model Card file to use as the official README.md")
