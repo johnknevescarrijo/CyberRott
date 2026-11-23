@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-CyberRott 1.3 - GGUF Export and Quantization Pipeline
-=====================================================
+CyberRott v1.4 - GGUF Export and Quantization Pipeline
+======================================================
 Automates the full post-training workflow for local Ollama / llama.cpp deployment:
 1. Sequential Adapter Fusion (Base Model + SFT LoRA + GRPO RL -> Standalone).
 2. Download and compilation/configuration of llama.cpp.
@@ -12,8 +12,8 @@ Automates the full post-training workflow for local Ollama / llama.cpp deploymen
 
 Usage Example:
     python scripts/export_gguf.py \
-        --sft_adapter /content/drive/MyDrive/CyberRott_Checkpoints/cyberrott_v1_1_sft_lora \
-        --grpo_adapter /content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_3_GRPO \
+        --sft_adapter /content/drive/MyDrive/CyberRott_Checkpoints/CyberRott-v1.4-SFT-DoRA \
+        --grpo_adapter /content/drive/MyDrive/CyberRott_Checkpoints/CyberRott_v1_4_GRPO \
         --quant_type Q4_K_M \
         --output_dir ./exports
 """
@@ -41,15 +41,63 @@ except Exception:
     pass
 
 
-def run_cmd(command: str, description: str = ""):
-    """Executes a shell command with error handling and structured console logging."""
+from typing import List
+
+
+def run_cmd(command: List[str], description: str = ""):
+    """Executes a command list with shell=False, error handling, and structured console logging."""
     if description:
         print(f"\n[*] {description}...")
-    print(f"    $ {command}")
-    res = subprocess.run(command, shell=True, text=True)
+    print(f"    $ {' '.join(command)}")
+    res = subprocess.run(command, shell=False, text=True)
     if res.returncode != 0:
-        print(f"[!] Execution failed for: {command}")
+        print(f"[!] Execution failed for: {' '.join(command)}")
         sys.exit(res.returncode)
+
+
+def build_modelfile_content(gguf_path: str, base_model: str = "microsoft/Phi-4-mini-instruct") -> str:
+    """Build an Ollama Modelfile using the native template for Phi-4 or ChatML for Qwen."""
+    abs_gguf = os.path.abspath(gguf_path)
+    system_prompt = (
+        "You are CyberRott, a specialized reasoning AI for offensive, defensive, "
+        "and vulnerability analysis with deep 7-stage analytical reasoning."
+    )
+    if "qwen" in (base_model or "").lower():
+        template_block = (
+            '<|im_start|>system\n'
+            '{{ .System }}<|im_end|>\n'
+            '<|im_start|>user\n'
+            '{{ .Prompt }}<|im_end|>\n'
+            '<|im_start|>assistant\n'
+        )
+        stop_lines = (
+            'PARAMETER stop "<|im_end|>"\n'
+            'PARAMETER stop "<|endoftext|>"\n'
+        )
+    else:
+        template_block = (
+            '<|system|>\n'
+            '{{ .System }}<|end|>\n'
+            '<|user|>\n'
+            '{{ .Prompt }}<|end|>\n'
+            '<|assistant|>\n'
+        )
+        stop_lines = (
+            'PARAMETER stop "<|end|>"\n'
+            'PARAMETER stop "<|user|>"\n'
+            'PARAMETER stop "<|assistant|>"\n'
+            'PARAMETER stop "<|im_end|>"\n'
+            'PARAMETER stop "<|endoftext|>"\n'
+        )
+
+    return (
+        f"FROM {abs_gguf}\n\n"
+        f'TEMPLATE """{template_block}"""\n\n'
+        f'SYSTEM """{system_prompt}"""\n\n'
+        "PARAMETER temperature 0.3\n"
+        "PARAMETER top_p 0.9\n"
+        f"{stop_lines}"
+    )
 
 
 def export_pipeline(
@@ -113,7 +161,7 @@ def export_pipeline(
 
     if not os.path.exists(llama_cpp_dir):
         run_cmd(
-            f"git clone --depth 1 https://github.com/ggerganov/llama.cpp.git {llama_cpp_dir}",
+            ["git", "clone", "--depth", "1", "https://github.com/ggerganov/llama.cpp.git", llama_cpp_dir],
             "Cloning llama.cpp repository"
         )
     else:
@@ -121,7 +169,7 @@ def export_pipeline(
 
     # Install conversion dependencies for llama.cpp
     run_cmd(
-        f"{sys.executable} -m pip install -q -r {llama_cpp_dir}/requirements.txt",
+        [sys.executable, "-m", "pip", "install", "-q", "-r", os.path.join(llama_cpp_dir, "requirements.txt")],
         "Installing llama.cpp conversion dependencies"
     )
 
@@ -138,7 +186,7 @@ def export_pipeline(
         convert_script = os.path.join(llama_cpp_dir, "convert-hf-to-gguf.py")
 
     run_cmd(
-        f"{sys.executable} {convert_script} {standalone_dir} --outtype f16 --outfile {f16_gguf_path}",
+        [sys.executable, convert_script, standalone_dir, "--outtype", "f16", "--outfile", f16_gguf_path],
         "Converting Hugging Face tensors to GGUF F16 file"
     )
 
@@ -164,11 +212,14 @@ def export_pipeline(
                 quantize_bin = quantize_bin_alt
             else:
                 build_dir = os.path.join(llama_cpp_dir, "build")
-                run_cmd(f"cmake -B {build_dir} {llama_cpp_dir}", "Configuring CMake for build")
-                run_cmd(f"cmake --build {build_dir} --config Release -j --target llama-quantize", "Compiling llama-quantize binary")
+                run_cmd(["cmake", "-B", build_dir, llama_cpp_dir], "Configuring CMake for build")
+                run_cmd(
+                    ["cmake", "--build", build_dir, "--config", "Release", "-j", "--target", "llama-quantize"],
+                    "Compiling llama-quantize binary"
+                )
 
         run_cmd(
-            f"{quantize_bin} {f16_gguf_path} {quant_gguf_path} {quant_type}",
+            [quantize_bin, f16_gguf_path, quant_gguf_path, quant_type],
             f"Executing {quant_type} quantization on model"
         )
 
@@ -179,23 +230,7 @@ def export_pipeline(
     print("STAGE 5: GENERATING MODELFILE FOR OLLAMA")
     print("=" * 70)
 
-    modelfile_content = f"""FROM {os.path.abspath(quant_gguf_path)}
-
-TEMPLATE \"\"\"<|im_start|>system
-{{{{ .System }}}}<|im_end|>
-<|im_start|>user
-{{{{ .Prompt }}}}<|im_end|>
-<|im_start|>assistant
-\"\"\"
-
-SYSTEM \"\"\"You are CyberRott, a specialized reasoning AI for offensive, defensive, and vulnerability analysis with deep 7-stage analytical reasoning.\"\"\"
-
-PARAMETER temperature 0.3
-PARAMETER top_p 0.9
-PARAMETER stop "<|im_end|>"
-PARAMETER stop "<|end|>"
-PARAMETER stop "<|endoftext|>"
-"""
+    modelfile_content = build_modelfile_content(quant_gguf_path, base_model=base_model)
 
     with open(modelfile_path, "w", encoding="utf-8") as f:
         f.write(modelfile_content)
@@ -216,7 +251,7 @@ PARAMETER stop "<|endoftext|>"
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Automated LoRA Merge + GGUF Conversion + Quantization Pipeline for CyberRott 1.3"
+        description="Automated LoRA Merge + GGUF Conversion + Quantization Pipeline for CyberRott v1.4"
     )
     parser.add_argument(
         "--base_model",

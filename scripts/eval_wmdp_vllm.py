@@ -113,8 +113,23 @@ def resolve_model_or_adapter_path(model_name: str, sft_adapter: str = None, base
     tokenizer_source = None
     checked_model_paths = []
 
+    # 0. Respect an explicit local path (GGUF file or model/adapter dir) before priority fallbacks
+    if model_name and os.path.exists(model_name):
+        if os.path.isfile(model_name):
+            resolved_model = os.path.abspath(model_name)
+            tokenizer_source = base_model
+        elif os.path.isdir(model_name):
+            if os.path.exists(os.path.join(model_name, "config.json")) or os.path.exists(os.path.join(model_name, "adapter_config.json")):
+                resolved_model = os.path.abspath(model_name)
+                tokenizer_source = resolved_model
+            else:
+                valid_local = find_checkpoint_subdir(model_name)
+                if valid_local:
+                    resolved_model = valid_local
+                    tokenizer_source = valid_local
+
     # 1. Priority inspection for BF16 checkpoints and standalone models
-    if "CyberRott" in model_name or "GRPO" in model_name or "cyberrott" in model_name.lower():
+    if not resolved_model and ("CyberRott" in model_name or "GRPO" in model_name or "cyberrott" in model_name.lower()):
         bf16_priority_candidates = [
             # v1.4
             ("/content/CyberRott-v1.4-BF16-Standalone", True),
@@ -657,13 +672,6 @@ def main():
             base_dir = "/content" if os.path.exists("/content") else "."
             standalone_target = os.path.abspath(os.path.join(base_dir, f"CyberRott-{version_str}-BF16-Standalone"))
 
-            legacy_target = os.path.abspath(os.path.join(base_dir, "CyberRott-v1.2-BF16-Standalone"))
-            if version_str in ["v1.3", "v1.4"] and not os.path.exists(os.path.join(standalone_target, "config.json")):
-                if os.path.exists(os.path.join(legacy_target, "config.json")):
-                    print(f"[*] Detected merged model from prior run at '{legacy_target}'.")
-                    print(f"[*] Moving/Renaming to target '{standalone_target}'...")
-                    shutil.move(legacy_target, standalone_target)
-
             print(f"[*] Detected LoRA adapter at '{model_to_load}'. Checking standalone model at '{standalone_target}'...")
             if not os.path.exists(os.path.join(standalone_target, "config.json")):
                 print("[*] Standalone model not found. Executing automatic merge_lora fusion in pure bfloat16...")
@@ -1041,8 +1049,12 @@ def main():
             rec["vote_distribution"] = agg_record.get("vote_distribution")
         detailed_results.append(rec)
 
-    acc = correct / total
-    stderr = (acc * (1 - acc) / total) ** 0.5
+    if total > 0:
+        acc = correct / total
+        stderr = (acc * (1 - acc) / total) ** 0.5
+    else:
+        acc = 0.0
+        stderr = 0.0
     ci_95_lower = max(0.0, acc - 1.96 * stderr)
     ci_95_upper = min(1.0, acc + 1.96 * stderr)
 
@@ -1142,10 +1154,16 @@ def main():
 
     latest_summary_file = os.path.join(args.output_dir, "latest_summary.json")
     latest_full_file = os.path.join(args.output_dir, "latest_full_results.json")
+    versioned_summary_file = os.path.join(args.output_dir, f"latest_summary{detected_version}.json")
+    versioned_full_file = os.path.join(args.output_dir, f"latest_full_results{detected_version}.json")
     shutil.copy2(summary_file, latest_summary_file)
     shutil.copy2(full_file, latest_full_file)
+    shutil.copy2(summary_file, versioned_summary_file)
+    shutil.copy2(full_file, versioned_full_file)
     print(f"  📁 Latest summary:     {latest_summary_file}")
     print(f"  📁 Latest full log:    {latest_full_file}")
+    print(f"  📁 Versioned summary:  {versioned_summary_file}")
+    print(f"  📁 Versioned full log: {versioned_full_file}")
 
     # Persistent Google Drive backup if mounted
     if os.path.exists("/content/drive/MyDrive"):
@@ -1155,6 +1173,8 @@ def main():
         shutil.copy2(history_file, args.drive_backup_dir)
         shutil.copy2(latest_summary_file, args.drive_backup_dir)
         shutil.copy2(latest_full_file, args.drive_backup_dir)
+        shutil.copy2(versioned_summary_file, args.drive_backup_dir)
+        shutil.copy2(versioned_full_file, args.drive_backup_dir)
         print(f"☁️ Automatic Google Drive backup completed: {args.drive_backup_dir}")
 
     print("\n" + "=" * 70)
