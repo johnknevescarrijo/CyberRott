@@ -280,5 +280,100 @@ class TestStarV14Upgrades:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
 
+    def test_v14_star_preset_respects_explicit_overrides_and_no_dora(self):
+        args = parse_args([
+            "--preset_v1_4",
+            "--lora_r", "16",
+            "--lora_alpha", "32",
+            "--num_candidates", "8",
+            "--max_new_tokens", "512",
+            "--no_dora",
+        ])
+        assert args.lora_r == 16
+        assert args.lora_alpha == 32
+        assert args.num_candidates == 8
+        assert args.max_new_tokens == 512
+        assert args.use_dora is False
+
+    def test_vllm_backend_merges_lora_checkpoint_and_cleans_temp_dir_on_unload(self, tmp_path, monkeypatch):
+        import types
+        from unittest.mock import MagicMock
+
+        lora_dir = tmp_path / "lora_ckpt"
+        lora_dir.mkdir()
+        (lora_dir / "adapter_config.json").write_text(
+            json.dumps({"base_model_name_or_path": "microsoft/Phi-4-mini-instruct"}),
+            encoding="utf-8",
+        )
+
+        observed = {}
+        fake_merged = MagicMock()
+        fake_merged.peft_config = {"default": {}}
+
+        fake_peft_cls = MagicMock()
+        fake_peft_cls.from_pretrained.return_value.merge_and_unload.return_value = fake_merged
+
+        fake_tok = MagicMock()
+        fake_tok.pad_token = "<|endoftext|>"
+        fake_tok.eos_token = "<|endoftext|>"
+
+        class FakeLLM:
+            def __init__(self, model, **kwargs):
+                observed["vllm_model_path"] = model
+
+        fake_vllm_mod = types.ModuleType("vllm")
+        fake_vllm_mod.LLM = FakeLLM
+        fake_vllm_mod.SamplingParams = MagicMock()
+
+        fake_transformers_mod = types.ModuleType("transformers")
+        fake_transformers_mod.AutoModelForCausalLM = types.SimpleNamespace(from_pretrained=MagicMock())
+        fake_transformers_mod.AutoTokenizer = types.SimpleNamespace(from_pretrained=lambda *a, **kw: fake_tok)
+
+        fake_peft_mod = types.ModuleType("peft")
+        fake_peft_mod.PeftModel = fake_peft_cls
+
+        monkeypatch.setitem(sys.modules, "vllm", fake_vllm_mod)
+        monkeypatch.setitem(sys.modules, "transformers", fake_transformers_mod)
+        monkeypatch.setitem(sys.modules, "peft", fake_peft_mod)
+
+        gen = RolloutGenerator(backend="vllm", model_name_or_path=str(lora_dir))
+        assert observed["vllm_model_path"] != str(lora_dir)
+        assert gen._merged_temp_dir == observed["vllm_model_path"]
+        assert os.path.isdir(gen._merged_temp_dir)
+        fake_merged.save_pretrained.assert_called_once()
+
+        temp_dir_path = gen._merged_temp_dir
+        gen.unload()
+        assert gen._merged_temp_dir is None
+        assert not os.path.exists(temp_dir_path)
+
+    def test_vllm_rollout_generation_includes_phi4_end_stop_token(self, monkeypatch):
+        import types
+        from unittest.mock import MagicMock
+
+        captured = {}
+
+        class FakeSamplingParams:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        fake_vllm_mod = types.ModuleType("vllm")
+        fake_vllm_mod.SamplingParams = FakeSamplingParams
+        monkeypatch.setitem(sys.modules, "vllm", fake_vllm_mod)
+
+        gen = RolloutGenerator(backend="mock", model_name_or_path="microsoft/Phi-4-mini-instruct")
+        gen.tokenizer = MagicMock()
+        gen.tokenizer.apply_chat_template.return_value = "prompt"
+        gen.vllm_engine = MagicMock()
+        gen.vllm_engine.generate.return_value = [
+            types.SimpleNamespace(outputs=[types.SimpleNamespace(text="resp")])
+        ]
+
+        res = gen._vllm_rollout_generation([{"system_prompt": "s", "user_prompt": "u"}], num_candidates=1)
+        assert res == [["resp"]]
+        assert "<|end|>" in captured["stop"]
+        assert "<|im_end|>" in captured["stop"]
+        assert "<|endoftext|>" in captured["stop"]
+
 
 

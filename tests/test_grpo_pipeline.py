@@ -1487,6 +1487,113 @@ class TestGRPOAdapterAndCheckpointAutomation:
         assert observed["trainer_args_bs"] == 1
 
 
+class TestGRPOPipelineFixes:
+    """Valida correções de preset override, sync de DoRA, ensure_vllm_server e ensure_dataset_exists."""
+
+    def test_v14_preset_respects_explicit_overrides(self):
+        args = parse_args([
+            "--preset_v1_4",
+            "--lora_r", "16",
+            "--lora_alpha", "32",
+            "--max_completion_length", "512",
+            "--max_samples", "100",
+            "--no_dora",
+        ])
+        assert args.lora_r == 16
+        assert args.lora_alpha == 32
+        assert args.max_completion_length == 512
+        assert args.max_samples == 100
+        assert args.use_dora is False
+
+    def test_sync_dora_setting_with_checkpoint(self, tmp_path, capsys):
+        from types import SimpleNamespace
+        from scripts.train_grpo import sync_dora_setting_with_checkpoint
+
+        ckpt_dir = tmp_path / "checkpoint-40"
+        ckpt_dir.mkdir()
+        (ckpt_dir / "adapter_config.json").write_text(json.dumps({"use_dora": False}), encoding="utf-8")
+
+        args = SimpleNamespace(use_dora=True)
+        changed = sync_dora_setting_with_checkpoint(args, str(ckpt_dir))
+        assert changed is True
+        assert args.use_dora is False
+        assert "Mismatch de DoRA" in capsys.readouterr().out
+
+        # Sem divergência -> False
+        assert sync_dora_setting_with_checkpoint(args, str(ckpt_dir)) is False
+
+    def test_ensure_vllm_server_closes_log_file_and_registers_atexit(self, tmp_path, monkeypatch):
+        import scripts.train_grpo as train_grpo
+        from unittest.mock import MagicMock
+
+        monkeypatch.chdir(tmp_path)
+        probe_calls = {"n": 0}
+
+        def fake_probe(**kwargs):
+            probe_calls["n"] += 1
+            return probe_calls["n"] >= 2
+
+        fake_proc = MagicMock()
+        fake_proc.pid = 42424
+        fake_proc.poll.return_value = None
+
+        popen_kwargs = {}
+
+        def fake_popen(cmd, **kwargs):
+            popen_kwargs["stdout_closed_after_popen"] = kwargs["stdout"].closed
+            popen_kwargs["stdout_file"] = kwargs["stdout"]
+            return fake_proc
+
+        registered = []
+        monkeypatch.setattr(train_grpo, "probe_vllm_server", fake_probe)
+        monkeypatch.setattr(train_grpo.subprocess, "Popen", fake_popen)
+        monkeypatch.setattr(train_grpo.atexit, "register", lambda fn: registered.append(fn))
+        monkeypatch.setattr(train_grpo.time, "sleep", lambda *_: None)
+
+        ok = train_grpo.ensure_vllm_server(max_wait_seconds=5)
+        assert ok is True
+        assert popen_kwargs["stdout_file"].closed is True
+        assert len(registered) == 1
+        registered[0]()
+        fake_proc.terminate.assert_called_once()
+
+    def test_ensure_dataset_exists_uses_subprocess_run_for_git_clone(self, tmp_path, monkeypatch):
+        import scripts.train_grpo as train_grpo
+        from types import SimpleNamespace
+
+        target = tmp_path / "custom_dir" / "dataset_cyber_ready.jsonl"
+        fake_clone = "/tmp/cyberrott_git_clone"
+
+        def fake_urlretrieve(*args, **kwargs):
+            raise RuntimeError("network disabled")
+
+        clone_calls = []
+
+        def fake_run(cmd, **kwargs):
+            clone_calls.append(cmd)
+            data_dir = os.path.join(fake_clone, "data")
+            os.makedirs(data_dir, exist_ok=True)
+            with open(os.path.join(data_dir, "dataset_cyber_ready.jsonl"), "w", encoding="utf-8") as fh:
+                fh.write('{"prompt": "test"}\n')
+            return SimpleNamespace(returncode=0)
+
+        monkeypatch.setattr(train_grpo.urllib.request, "urlretrieve", fake_urlretrieve)
+        monkeypatch.setattr(train_grpo.subprocess, "run", fake_run)
+        if os.path.exists(fake_clone):
+            import shutil
+            shutil.rmtree(fake_clone, ignore_errors=True)
+
+        try:
+            resolved = train_grpo.ensure_dataset_exists(str(target), "https://example.invalid/data.jsonl")
+            assert resolved == str(target)
+            assert target.exists()
+            assert len(clone_calls) == 1
+            assert clone_calls[0][:4] == ["git", "clone", "--depth", "1"]
+        finally:
+            import shutil
+            shutil.rmtree(fake_clone, ignore_errors=True)
+
+
 
 
 
